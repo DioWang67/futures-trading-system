@@ -1,0 +1,54 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pfx
+*.pem
+*.p12
+
+# Config overrides
+config/settings_local.yaml
+
+# Data & reports (large / generated)
+data/*.parquet
+data/*.csv
+data/*.db
+data/*.sqlite
+data/*.db-*
+data/*.sqlite-*
+data/test_paper_dashboard/
+reports/*.html
+reports/*.log
+logs/
+.tmp/
+pytest_temp_root/
+pytest_temp_run_*/
+pythontrading-botpytest_temp_root/
+shioaji.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Generated
+equity_curve.png
