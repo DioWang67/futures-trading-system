@@ -1,5 +1,7 @@
 # Trading Bot
 
+See [ROADMAP.md](ROADMAP.md) for the current TMF live-trading gaps and next-step plan.
+
 TradingView webhook 自動化交易系統，同時路由訊號到：
 - **永豐金證券 (Shioaji)** — 台灣 MXF 小台指期貨
 - **Lucid Trading Prop Firm (Rithmic)** — CME MES 微型 E-mini S&P 500
