@@ -282,6 +282,89 @@ class TestShioajiBrokerPaperMode:
         assert status["watchdog_reason"] == ""
         assert status["quote"]["is_stale"] is False
 
+    @pytest.mark.asyncio
+    async def test_wait_for_fresh_quote_returns_latest_tick(self, monkeypatch):
+        fake_api = _FakeShioajiApi(simulation=True)
+
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "simulation", True)
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "api_key", SecretStr("api-key")
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "secret_key", SecretStr("secret-key")
+        )
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "ca_path", "")
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "futures_symbol", "TMF"
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "quote_stale_seconds", 15
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.sj, "Shioaji", lambda simulation=False: fake_api
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.ShioajiBroker, "_sync_position", lambda self: None
+        )
+
+        broker = shioaji_broker_module.ShioajiBroker()
+        broker.login()
+        broker._tick_callback(None, SimpleNamespace(code="TMFE6", close=20012.0))
+
+        quote = await broker.wait_for_fresh_quote(timeout_seconds=1.0)
+
+        assert quote["is_stale"] is False
+        assert quote["last_tick_price"] == 20012.0
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_protective_exit_uses_public_hook(self, monkeypatch):
+        fake_api = _FakeShioajiApi(simulation=True)
+
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "simulation", True)
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "api_key", SecretStr("api-key")
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "secret_key", SecretStr("secret-key")
+        )
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "ca_path", "")
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "futures_symbol", "TMF"
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.sj, "Shioaji", lambda simulation=False: fake_api
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.ShioajiBroker, "_sync_position", lambda self: None
+        )
+
+        broker = shioaji_broker_module.ShioajiBroker()
+        broker.login()
+        broker.position.update_position("long", 1, entry_price=20000.0)
+        broker.arm_protective_exit("TMF", "long", 1, stop_loss=19950.0, take_profit=20100.0)
+
+        captured: dict[str, object] = {}
+
+        async def fake_submit(ticker: str, reason: str, trigger_price: float) -> None:
+            captured["ticker"] = ticker
+            captured["reason"] = reason
+            captured["trigger_price"] = trigger_price
+
+        monkeypatch.setattr(broker, "_submit_protective_exit", fake_submit)
+        result = await broker.trigger_protective_exit("TMF", reason="manual_test", trigger_price=19980.0)
+        protective = broker.get_protective_exit("TMF")
+
+        assert result["status"] == "ok"
+        assert captured == {
+            "ticker": "TMF",
+            "reason": "manual_test",
+            "trigger_price": 19980.0,
+        }
+        assert protective is not None
+        assert protective["status"] == "triggered"
+        assert protective["trigger_source"] == "manual_test"
+        assert protective["trigger_price"] == 19980.0
+
     def test_submit_order_sync_uses_limit_price_for_protective_lmt(self, monkeypatch):
         fake_api = _FakeShioajiApi(simulation=True)
 
@@ -380,3 +463,50 @@ class TestShioajiBrokerPaperMode:
         assert events[0]["submit_price"] == 19946.0
         assert events[0]["fill_price"] == 19944.0
         assert events[0]["slippage_points"] == pytest.approx(-4.0)
+
+    def test_futures_deal_callback_updates_position_from_top_level_fields(self, monkeypatch):
+        fake_api = _FakeShioajiApi(simulation=True)
+
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "simulation", True)
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "api_key", SecretStr("api-key")
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "secret_key", SecretStr("secret-key")
+        )
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "ca_path", "")
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "futures_symbol", "TMF"
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.sj, "Shioaji", lambda simulation=False: fake_api
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.ShioajiBroker, "_sync_position", lambda self: None
+        )
+
+        trade_store = TradeStore(":memory:")
+        broker = shioaji_broker_module.ShioajiBroker(trade_store=trade_store)
+        broker.login()
+        broker._submit_order_sync("Buy", 1, "TMF")
+
+        broker._order_callback(
+            "OrderState.FuturesDeal",
+            {
+                "trade_id": "trade-id-1",
+                "seqno": "trade-id-1",
+                "ordno": "000C08",
+                "action": "Buy",
+                "code": "TMFE6",
+                "price": 37796.0,
+                "quantity": 1,
+            },
+        )
+
+        position = broker.position.get_position()
+        fills = trade_store.get_recent_fills(limit=1)
+
+        assert position.side == "long"
+        assert position.quantity == 1
+        assert position.entry_price == 37796.0
+        assert fills[0]["fill_price"] == 37796.0

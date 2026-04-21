@@ -203,11 +203,29 @@ class ShioajiBroker:
     def _extract_callback_order_id(self, msg: dict) -> str:
         order = msg.get("order", {}) or {}
         status = msg.get("status", {}) or {}
-        for key in ("id", "seqno", "ordno"):
-            value = str(order.get(key) or status.get(key) or "").strip()
+        for key in ("id", "seqno", "ordno", "trade_id"):
+            value = str(
+                order.get(key) or status.get(key) or msg.get(key) or ""
+            ).strip()
             if value:
                 return value
         return ""
+
+    def _extract_callback_fill(self, msg: dict) -> tuple[str, int, float]:
+        order = msg.get("order", {}) or {}
+        status = msg.get("status", {}) or {}
+        action = str(order.get("action") or msg.get("action") or "").strip()
+        deal_quantity = int(
+            status.get("deal_quantity", 0)
+            or msg.get("quantity", 0)
+            or 0
+        )
+        deal_price = _safe_float(
+            status.get("deal_price", 0.0)
+            or msg.get("price", 0.0),
+            0.0,
+        )
+        return action, deal_quantity, deal_price
 
     def _normalize_callback_status(self, msg: dict) -> str:
         status = msg.get("status", {}) or {}
@@ -580,6 +598,86 @@ class ShioajiBroker:
             "is_stale": is_stale,
         }
 
+    async def wait_for_fresh_quote(
+        self,
+        timeout_seconds: float = 15.0,
+        poll_interval: float = 0.25,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        while time.monotonic() < deadline:
+            quote = self.get_quote_status()
+            if not quote["is_stale"] and _safe_float(quote["last_tick_price"], 0.0) > 0:
+                return quote
+            await asyncio.sleep(max(0.05, float(poll_interval)))
+        return self.get_quote_status()
+
+    async def trigger_protective_exit(
+        self,
+        ticker: str = "",
+        reason: str = "manual_test",
+        trigger_price: float = 0.0,
+    ) -> dict[str, Any]:
+        ticker = str(ticker or self._futures_symbol).upper()
+        with self._protective_lock:
+            protective = self._protective_exits.get(ticker)
+            if protective is None:
+                return {
+                    "status": "error",
+                    "reason": f"no protective exit armed for {ticker}",
+                }
+            if protective.exit_sent:
+                return {
+                    "status": "skipped",
+                    "reason": f"protective exit already in-flight for {ticker}",
+                }
+            if trigger_price <= 0:
+                trigger_price = max(
+                    0.0,
+                    _safe_float(self._last_tick_price, 0.0),
+                    _safe_float(protective.stop_loss, 0.0),
+                    _safe_float(protective.take_profit, 0.0),
+                )
+            if trigger_price <= 0:
+                return {
+                    "status": "error",
+                    "reason": f"no trigger price available for {ticker}",
+                }
+            protective.exit_sent = True
+            protective.status = "triggered"
+            protective.trigger_reason = str(reason or "manual_test")
+            protective.trigger_price = trigger_price
+            protective.trigger_source = "manual_test"
+            protective.triggered_at = datetime.now(timezone.utc).isoformat()
+            side = protective.side
+            quantity = protective.quantity
+
+        logger.warning(
+            "[Shioaji] Manual protective exit triggered for {} at {:.1f} ({})",
+            ticker,
+            trigger_price,
+            reason,
+        )
+        if self._notifier:
+            self._schedule_coroutine(
+                self._notifier.send_protective_event(
+                    self.broker_name,
+                    ticker,
+                    side,
+                    quantity,
+                    str(reason or "manual_test"),
+                    "triggered",
+                    trigger_price=trigger_price,
+                )
+            )
+        await self._submit_protective_exit(ticker, str(reason or "manual_test"), trigger_price)
+        protective_now = self.get_protective_exit(ticker)
+        return {
+            "status": "ok",
+            "ticker": ticker,
+            "trigger_price": trigger_price,
+            "protective_exit": protective_now,
+        }
+
     def get_watchdog_status(self) -> dict[str, Any]:
         position = self.position.get_position()
         protective = self.get_protective_exit(self._futures_symbol)
@@ -817,6 +915,13 @@ class ShioajiBroker:
             status = msg.get("status", {}) or {}
             broker_order_id = self._extract_callback_order_id(msg)
             normalized_status = self._normalize_callback_status(msg)
+            if (
+                not normalized_status
+                and str(msg.get("action") or "").strip()
+                and _safe_float(msg.get("price"), 0.0) > 0
+                and int(msg.get("quantity", 0) or 0) > 0
+            ):
+                normalized_status = "filled"
             error_message = str(
                 (msg.get("operation", {}) or {}).get("op_msg")
                 or status.get("errmsg")
@@ -843,8 +948,7 @@ class ShioajiBroker:
                         details=error_message or str(msg),
                     )
 
-            deal_quantity = int(status.get("deal_quantity", 0) or 0)
-            deal_price = _safe_float(status.get("deal_price", 0.0), 0.0)
+            action, deal_quantity, deal_price = self._extract_callback_fill(msg)
 
             if deal_quantity <= 0:
                 return
