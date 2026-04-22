@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import hmac
 import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 
+from config import settings
 from trade_store import TradeStore
 
 
@@ -37,6 +39,17 @@ def _get_trade_store(db_path: Path) -> TradeStore:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _require_admin_secret(x_admin_secret: str = Header(default="")) -> None:
+    expected = settings.admin.secret.get_secret_value()
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin secret not configured on server",
+        )
+    if not x_admin_secret or not hmac.compare_digest(x_admin_secret, expected):
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
 
 
 def _load_runner_state(path: Path | None = None) -> dict[str, Any]:
@@ -168,7 +181,7 @@ def _build_dashboard_payload() -> dict[str, Any]:
 
 
 @app.get("/api/dashboard")
-async def api_dashboard() -> dict[str, Any]:
+async def api_dashboard(_: None = Depends(_require_admin_secret)) -> dict[str, Any]:
     return _build_dashboard_payload()
 
 
@@ -367,6 +380,16 @@ async def dashboard() -> str:
   </div>
 
   <script>
+    const url = new URL(window.location.href);
+    const adminSecret = url.searchParams.get("admin_secret") || sessionStorage.getItem("paperDashboardAdminSecret") || "";
+    if (adminSecret) {
+      sessionStorage.setItem("paperDashboardAdminSecret", adminSecret);
+    }
+    if (url.searchParams.has("admin_secret")) {
+      url.searchParams.delete("admin_secret");
+      const scrubbed = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState({}, "", scrubbed || "/");
+    }
     function fmtMoney(value, digits = 0) {
       if (value == null || value === "") return "-";
       return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
@@ -392,7 +415,11 @@ async def dashboard() -> str:
       el.textContent = String(value ?? "-");
     }
     async function refresh() {
-      const res = await fetch("/api/dashboard", { cache: "no-store" });
+      const headers = adminSecret ? { "X-Admin-Secret": adminSecret } : {};
+      const res = await fetch("/api/dashboard", { cache: "no-store", headers });
+      if (!res.ok) {
+        throw new Error(`dashboard fetch failed: ${res.status}`);
+      }
       const data = await res.json();
       const runner = data.runner || {};
       const meta = runner.metadata || {};
@@ -500,8 +527,14 @@ async def dashboard() -> str:
         : "";
       document.getElementById("refreshedAt").textContent = `最後刷新 ${new Date().toLocaleTimeString("zh-TW")}`;
     }
-    refresh();
-    setInterval(refresh, 5000);
+    refresh().catch(err => {
+      document.getElementById("storageNotice").innerHTML = `<div class="notice">${err.message}</div>`;
+    });
+    setInterval(() => {
+      refresh().catch(err => {
+        document.getElementById("storageNotice").innerHTML = `<div class="notice">${err.message}</div>`;
+      });
+    }, 5000);
   </script>
 </body>
 </html>"""

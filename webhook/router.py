@@ -229,11 +229,11 @@ async def _safe_execute(
     idempotency_key: str = "",
 ) -> dict:
     """Execute broker order with full error isolation."""
-    broker_name = "unknown"
+    broker_name = str(getattr(broker, "broker_name", "") or "unknown")
     try:
         position = getattr(broker, "position", None)
-        if position is not None:
-            broker_name = position._broker_name
+        if broker_name == "unknown" and position is not None:
+            broker_name = str(getattr(position, "broker_name", "") or "unknown")
 
         # Pass full payload to broker
         place_order = getattr(broker, "place_order", None)

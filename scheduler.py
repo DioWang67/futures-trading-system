@@ -28,7 +28,10 @@ RISK_RESET_HOUR = 8
 RISK_RESET_MINUTE = 30
 
 
-async def shioaji_token_refresh_loop(shioaji_broker: object) -> None:
+async def shioaji_token_refresh_loop(
+    shioaji_broker: object,
+    notifier: object = None,
+) -> None:
     """Re-login to Shioaji every 23 hours to prevent 24hr token expiry."""
     while True:
         await asyncio.sleep(REFRESH_INTERVAL)
@@ -50,8 +53,6 @@ async def shioaji_token_refresh_loop(shioaji_broker: object) -> None:
                         "[Scheduler] Shioaji token refresh exhausted all {} retries",
                         MAX_RETRIES,
                     )
-                    # Notify
-                    notifier = getattr(shioaji_broker, "_notifier", None)
                     if notifier:
                         await notifier.send_error(
                             "Shioaji token refresh failed after all retries!"
@@ -117,7 +118,11 @@ async def broker_health_monitor(
         was_connected["rithmic"] = rt_connected
 
 
-async def daily_risk_reset_loop(risk_manager: object) -> None:
+async def daily_risk_reset_loop(
+    risk_manager: object,
+    trade_store: object = None,
+    idempotency_retention_days: int = 90,
+) -> None:
     """Reset daily risk counters at 08:30 Asia/Taipei."""
     while True:
         now = datetime.now(tz=RISK_RESET_TZ)
@@ -141,6 +146,19 @@ async def daily_risk_reset_loop(risk_manager: object) -> None:
 
         try:
             risk_manager.reset_daily()
+            if (
+                trade_store is not None
+                and hasattr(trade_store, "prune_idempotency_reservations")
+                and int(idempotency_retention_days) > 0
+            ):
+                pruned = trade_store.prune_idempotency_reservations(
+                    retention_days=idempotency_retention_days
+                )
+                if pruned:
+                    logger.info(
+                        "[Scheduler] Pruned {} stale idempotency reservations",
+                        pruned,
+                    )
             logger.info("[Scheduler] Daily risk counters reset")
         except Exception as e:
             logger.error("[Scheduler] Daily reset failed: {}", e)

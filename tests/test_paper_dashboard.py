@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
 import paper_dashboard
 
 
@@ -145,3 +148,38 @@ def test_dashboard_payload_reads_runner_state_and_trade_store(monkeypatch):
     assert payload["recent_fills"][0]["broker"] == "shioaji"
     assert payload["recent_protective_events"][0]["status"] == "filled"
     assert payload["recent_risk_events"][0]["event_type"] == "order_rejected"
+
+
+def test_dashboard_api_requires_admin_secret(monkeypatch):
+    monkeypatch.setattr(
+        paper_dashboard.settings.admin,
+        "secret",
+        SecretStr("dashboard-secret-1234"),
+    )
+    client = TestClient(paper_dashboard.app)
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 403
+
+
+def test_dashboard_api_accepts_admin_secret(monkeypatch):
+    monkeypatch.setattr(
+        paper_dashboard.settings.admin,
+        "secret",
+        SecretStr("dashboard-secret-1234"),
+    )
+    monkeypatch.setattr(
+        paper_dashboard,
+        "_build_dashboard_payload",
+        lambda: {"runner": {"status": "ok"}, "position": {"side": "flat"}},
+    )
+    client = TestClient(paper_dashboard.app)
+
+    response = client.get(
+        "/api/dashboard",
+        headers={"X-Admin-Secret": "dashboard-secret-1234"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["runner"]["status"] == "ok"

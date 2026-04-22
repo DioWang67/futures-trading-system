@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pandas as pd
 import shioaji as sj
+from shioaji import error as sj_error
 from loguru import logger
 
 from config import settings
@@ -572,23 +573,42 @@ class ShioajiBroker:
         if quantity <= 0 or (stop_loss <= 0 and take_profit <= 0):
             self.disarm_protective_exit(ticker)
             return
+        normalized_side = str(side or "").lower()
         with self._protective_lock:
-            self._protective_exits[ticker] = ProtectiveExit(
-                ticker=ticker,
-                side=str(side or "").lower(),
-                quantity=quantity,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                armed_at=datetime.now(timezone.utc).isoformat(),
-            )
+            existing = self._protective_exits.get(ticker)
+            if existing and (
+                existing.exit_sent or existing.status in {"triggered", "submitted"}
+            ):
+                existing.side = normalized_side
+                existing.quantity = quantity
+                existing.stop_loss = stop_loss
+                existing.take_profit = take_profit
+                log_message = "[Shioaji] Protective exit updated in-flight: {} {} x{} SL={} TP={}"
+            else:
+                self._protective_exits[ticker] = ProtectiveExit(
+                    ticker=ticker,
+                    side=normalized_side,
+                    quantity=quantity,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    armed_at=datetime.now(timezone.utc).isoformat(),
+                )
+                log_message = "[Shioaji] Protective exit armed: {} {} x{} SL={} TP={}"
         logger.info(
-            "[Shioaji] Protective exit armed: {} {} x{} SL={} TP={}",
+            log_message,
             ticker,
-            side,
+            normalized_side,
             quantity,
             stop_loss or "-",
             take_profit or "-",
         )
+
+    def _is_simulation_submit_timeout(self, exc: Exception) -> bool:
+        if not self._simulation:
+            return False
+        if isinstance(exc, sj_error.TimeoutError):
+            return str(getattr(exc, "topic", "") or "").strip() == "api/v1/paper/place_order"
+        return str(getattr(exc, "topic", "") or "").strip() == "api/v1/paper/place_order"
 
     def disarm_protective_exit(self, ticker: str) -> None:
         ticker = str(ticker or self._futures_symbol).upper()
@@ -1204,7 +1224,7 @@ class ShioajiBroker:
                 )
                 trade = api.place_order(contract, order)
         except Exception as exc:
-            if self._simulation and "api/v1/paper/place_order" in str(exc):
+            if self._is_simulation_submit_timeout(exc):
                 logger.warning(
                     "[Shioaji] Simulation place_order raised after submit; "
                     "treating as submitted and waiting for callback: {}",

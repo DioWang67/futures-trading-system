@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -151,6 +151,8 @@ class TradeStore:
                     ON protective_events(broker, triggered_at);
                 CREATE INDEX IF NOT EXISTS idx_position_snapshots_broker
                     ON position_snapshots(broker, snapshot_at);
+                CREATE INDEX IF NOT EXISTS idx_idempotency_reservations_created_at
+                    ON idempotency_reservations(created_at);
             """)
             # Migrate older DBs that pre-date the filled_qty column.
             cur.execute("PRAGMA table_info(orders)")
@@ -228,6 +230,22 @@ class TradeStore:
             return True
         except sqlite3.IntegrityError:
             return False
+
+    def prune_idempotency_reservations(self, retention_days: int = 90) -> int:
+        """Delete stale reservation markers older than ``retention_days``."""
+        retention_days = int(retention_days)
+        if retention_days <= 0:
+            return 0
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM idempotency_reservations WHERE created_at < ?",
+                (cutoff,),
+            )
+            deleted = max(int(cur.rowcount or 0), 0)
+        return deleted
 
     # ------------------------------------------------------------------
     # Orders

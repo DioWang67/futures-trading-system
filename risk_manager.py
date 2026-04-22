@@ -70,6 +70,7 @@ class RiskManager:
         self._current_equity = self._config.initial_capital
         self._halted = False
         self._halt_reason = ""
+        self._halted_at = ""
         self._close_only = False
         self._close_only_reason = ""
         self._cooldown_until: dict[str, float] = {}  # broker -> unix timestamp
@@ -101,6 +102,8 @@ class RiskManager:
     def _halt(self, reason: str) -> None:
         self._halted = True
         self._halt_reason = reason
+        if not self._halted_at:
+            self._halted_at = datetime.now(timezone.utc).isoformat()
         logger.critical("[RiskManager] TRADING HALTED: {}", reason)
 
     def set_close_only(self, enabled: bool, reason: str = "") -> None:
@@ -125,8 +128,6 @@ class RiskManager:
         broker_name: str,
         action: str,
         quantity: int,
-        current_position_qty: int = 0,
-        current_position_side: str = "flat",
     ) -> tuple[bool, str]:
         """Pre-trade risk check. Returns (allowed, reason).
 
@@ -135,8 +136,6 @@ class RiskManager:
         broker_name : str
         action : str — "buy", "sell", "exit"
         quantity : int — requested order size
-        current_position_qty : int — current position size for this broker
-        current_position_side : str — "long" / "short" / "flat"
         """
         with self._lock:
             # 1. Exit orders always allowed — they reduce risk and must still
@@ -165,8 +164,6 @@ class RiskManager:
             #    here; flat / opposite both fully flip to ``quantity``.
             #    Using the signed-net trick (short 3 + buy 5 -> net 2) is
             #    wrong because the real final exposure is long 5.
-            _ = current_position_side  # kept for API compat / diagnostics
-            _ = current_position_qty
             new_exposure = quantity
             if new_exposure > self._config.max_position_size:
                 return False, (
@@ -317,6 +314,7 @@ class RiskManager:
         with self._lock:
             self._halted = False
             self._halt_reason = ""
+            self._halted_at = ""
             self._close_only = False
             self._close_only_reason = ""
             self._cooldown_until.clear()
@@ -334,6 +332,7 @@ class RiskManager:
             return {
                 "halted": self._halted,
                 "halt_reason": self._halt_reason,
+                "halted_since": self._halted_at,
                 "close_only": self._close_only,
                 "close_only_reason": self._close_only_reason,
                 "daily_pnl": portfolio.realized_pnl,

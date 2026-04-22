@@ -7,7 +7,7 @@ Industrial-grade features:
   - Health / readiness / risk-status endpoints
   - Risk management with daily loss limits & drawdown circuit breaker
   - Trade persistence (SQLite) with crash recovery
-  - Telegram / LINE notifications
+  - Telegram notifications
   - Graceful shutdown with timeout
 """
 
@@ -203,7 +203,7 @@ async def lifespan(app: FastAPI):
 
     # Background tasks
     refresh_task = asyncio.create_task(
-        shioaji_token_refresh_loop(shioaji_broker),
+        shioaji_token_refresh_loop(shioaji_broker, notifier),
         name="shioaji-token-refresh",
     )
     protective_watchdog_task = asyncio.create_task(
@@ -215,7 +215,7 @@ async def lifespan(app: FastAPI):
         name="broker-health-monitor",
     )
     risk_reset_task = asyncio.create_task(
-        daily_risk_reset_loop(risk_manager),
+        daily_risk_reset_loop(risk_manager, trade_store),
         name="daily-risk-reset",
     )
 

@@ -253,7 +253,7 @@ async def route_order(
             # Exits always pass the risk gate, but record for auditability.
             if risk_manager:
                 ok, reason = risk_manager.check_order(
-                    broker_name, action, 0, current.quantity, current.side,
+                    broker_name, action, 0,
                 )
                 if not ok:
                     logger.warning("[{}] Risk rejected exit: {}", broker_name, reason)
@@ -296,7 +296,6 @@ async def route_order(
             if risk_manager:
                 ok, reason = risk_manager.check_order(
                     broker_name, action, quantity,
-                    current.quantity, current.side,
                 )
                 if not ok:
                     logger.warning(

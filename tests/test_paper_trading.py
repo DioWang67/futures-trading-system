@@ -177,7 +177,10 @@ class TestShioajiBrokerPaperMode:
     def test_simulation_place_order_exception_is_treated_as_submitted(self, monkeypatch):
         fake_api = _FakeShioajiApi(
             simulation=True,
-            place_order_exc=Exception("Topic: api/v1/paper/place_order, payload: {...}"),
+            place_order_exc=shioaji_broker_module.sj_error.TimeoutError(
+                "api/v1/paper/place_order",
+                {"payload": {"quantity": 1}},
+            ),
         )
 
         monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "simulation", True)
@@ -206,6 +209,38 @@ class TestShioajiBrokerPaperMode:
 
         assert result["status"] == "submitted"
         assert "simulation submit accepted" in result["reason"]
+
+    def test_simulation_generic_exception_is_not_treated_as_submitted(self, monkeypatch):
+        fake_api = _FakeShioajiApi(
+            simulation=True,
+            place_order_exc=Exception("Topic: api/v1/paper/place_order, payload: {...}"),
+        )
+
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "simulation", True)
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "api_key", SecretStr("api-key")
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "secret_key", SecretStr("secret-key")
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "ca_path", ""
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "futures_symbol", "TMF"
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.sj, "Shioaji", lambda simulation=False: fake_api
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.ShioajiBroker, "_sync_position", lambda self: None
+        )
+
+        broker = shioaji_broker_module.ShioajiBroker()
+        broker.login()
+
+        with pytest.raises(Exception, match="api/v1/paper/place_order"):
+            broker._submit_order_sync("Buy", 1, "TMF")
 
     def test_watchdog_enters_close_only_without_protective_exit(self, monkeypatch):
         fake_api = _FakeShioajiApi(simulation=True)
@@ -282,6 +317,55 @@ class TestShioajiBrokerPaperMode:
         assert status["close_only"] is False
         assert status["watchdog_reason"] == ""
         assert status["quote"]["is_stale"] is False
+
+    def test_arm_protective_exit_preserves_inflight_state_on_quantity_update(self, monkeypatch):
+        fake_api = _FakeShioajiApi(simulation=True)
+
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "simulation", True)
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "api_key", SecretStr("api-key")
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "secret_key", SecretStr("secret-key")
+        )
+        monkeypatch.setattr(shioaji_broker_module.settings.shioaji, "ca_path", "")
+        monkeypatch.setattr(
+            shioaji_broker_module.settings.shioaji, "futures_symbol", "TMF"
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.sj, "Shioaji", lambda simulation=False: fake_api
+        )
+        monkeypatch.setattr(
+            shioaji_broker_module.ShioajiBroker, "_sync_position", lambda self: None
+        )
+
+        broker = shioaji_broker_module.ShioajiBroker()
+        broker.login()
+        broker.arm_protective_exit("TMF", "long", 2, stop_loss=19950.0, take_profit=20100.0)
+        with broker._protective_lock:
+            protective = broker._protective_exits["TMF"]
+            protective.exit_sent = True
+            protective.status = "submitted"
+            protective.trigger_reason = "stop_loss"
+            protective.trigger_price = 19948.0
+            protective.trigger_source = "tick_last"
+            protective.triggered_at = "2026-04-23T00:00:00+00:00"
+            protective.broker_order_id = "protective-1"
+            protective.protective_event_id = 42
+
+        broker.arm_protective_exit("TMF", "long", 1, stop_loss=19940.0, take_profit=20090.0)
+        refreshed = broker.get_protective_exit("TMF")
+
+        assert refreshed is not None
+        assert refreshed["quantity"] == 1
+        assert refreshed["status"] == "submitted"
+        assert refreshed["exit_sent"] is True
+        assert refreshed["trigger_reason"] == "stop_loss"
+        assert refreshed["trigger_price"] == 19948.0
+        assert refreshed["broker_order_id"] == "protective-1"
+        assert refreshed["protective_event_id"] == 42
+        assert refreshed["stop_loss"] == 19940.0
+        assert refreshed["take_profit"] == 20090.0
 
     @pytest.mark.asyncio
     async def test_wait_for_fresh_quote_returns_latest_tick(self, monkeypatch):

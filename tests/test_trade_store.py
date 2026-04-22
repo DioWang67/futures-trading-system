@@ -1,6 +1,4 @@
 """Tests for the trade persistence layer."""
-
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -69,7 +67,6 @@ class TestOrders:
 
     def test_claim_pending_order_full_fill(self, store):
         order_id = store.record_order("shioaji", "Buy", 3)
-        # record_order stores status='submitted' by default
         matched = store.claim_pending_order("shioaji", "Buy", fill_qty=3)
         assert matched == order_id
         pending = store.get_pending_orders("shioaji")
@@ -133,6 +130,23 @@ class TestOrders:
             "shioaji", "Buy", 1, idempotency_key="legacy-key",
         )
         assert store.reserve_idempotency("legacy-key", "shioaji") is False
+
+    def test_prune_idempotency_reservations_removes_only_stale_rows(self, store):
+        assert store.reserve_idempotency("stale-key", "shioaji") is True
+        assert store.reserve_idempotency("fresh-key", "shioaji") is True
+        with store._cursor() as cur:
+            cur.execute(
+                "UPDATE idempotency_reservations SET created_at = ? WHERE key = ?",
+                ("2000-01-01T00:00:00+00:00", "stale-key"),
+            )
+
+        deleted = store.prune_idempotency_reservations(retention_days=90)
+
+        assert deleted == 1
+        assert store.check_idempotency("stale-key") is None
+        fresh = store.check_idempotency("fresh-key")
+        assert fresh is not None
+        assert fresh["source"] == "reservation"
 
 
 class TestFills:

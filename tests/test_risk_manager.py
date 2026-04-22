@@ -28,18 +28,18 @@ def rm(config):
 
 class TestPreTradeChecks:
     def test_normal_order_allowed(self, rm):
-        ok, reason = rm.check_order("shioaji", "buy", 2, 0)
+        ok, reason = rm.check_order("shioaji", "buy", 2)
         assert ok is True
         assert reason == ""
 
     def test_exit_always_allowed(self, rm):
         # Even when halted, exits should be allowed... but we halt first
         # Actually our logic checks halt first. Let's test exit without halt
-        ok, reason = rm.check_order("shioaji", "exit", 0, 3)
+        ok, reason = rm.check_order("shioaji", "exit", 0)
         assert ok is True
 
     def test_order_qty_exceeds_max(self, rm):
-        ok, reason = rm.check_order("shioaji", "buy", 10, 0)
+        ok, reason = rm.check_order("shioaji", "buy", 10)
         assert ok is False
         assert "max" in reason.lower()
 
@@ -59,7 +59,7 @@ class TestPreTradeChecks:
             cooldown_after_consecutive_losses=3, cooldown_seconds=2,
             initial_capital=200_000.0,
         ))
-        ok, reason = rm2.check_order("shioaji", "buy", 5, 0, "flat")
+        ok, reason = rm2.check_order("shioaji", "buy", 5)
         assert ok is True, reason
 
     def test_position_size_over_limit(self):
@@ -71,13 +71,13 @@ class TestPreTradeChecks:
             cooldown_after_consecutive_losses=3, cooldown_seconds=2,
             initial_capital=200_000.0,
         ))
-        ok, reason = rm2.check_order("shioaji", "buy", 4, 0, "flat")
+        ok, reason = rm2.check_order("shioaji", "buy", 4)
         assert ok is False
         assert "position" in reason.lower()
 
     def test_reversal_allowed_when_target_under_limit(self, rm):
         # short 4 + buy 3 fully flips to long 3, under the limit of 5.
-        ok, reason = rm.check_order("shioaji", "buy", 3, 4, "short")
+        ok, reason = rm.check_order("shioaji", "buy", 3)
         assert ok is True, reason
 
     def test_reversal_rejected_when_target_exceeds_limit(self):
@@ -91,7 +91,7 @@ class TestPreTradeChecks:
             cooldown_after_consecutive_losses=3, cooldown_seconds=2,
             initial_capital=200_000.0,
         ))
-        ok, reason = rm2.check_order("shioaji", "buy", 5, 3, "short")
+        ok, reason = rm2.check_order("shioaji", "buy", 5)
         assert ok is False
         assert "position" in reason.lower()
 
@@ -100,11 +100,11 @@ class TestDailyLossLimit:
     def test_daily_loss_triggers_halt(self, rm):
         # Daily loss limit = min(10_000, 200_000*0.05) = $10,000
         rm.record_fill("shioaji", -5000.0)
-        ok, _ = rm.check_order("shioaji", "buy", 1, 0)
+        ok, _ = rm.check_order("shioaji", "buy", 1)
         assert ok is True  # still under limit
 
         rm.record_fill("shioaji", -5001.0)
-        ok, reason = rm.check_order("shioaji", "buy", 1, 0)
+        ok, reason = rm.check_order("shioaji", "buy", 1)
         assert ok is False
         assert rm.is_halted is True
 
@@ -116,7 +116,7 @@ class TestDailyLossLimit:
         )
         rm = RiskManager(config)
         rm.record_fill("shioaji", -2001.0)
-        ok, _ = rm.check_order("shioaji", "buy", 1, 0)
+        ok, _ = rm.check_order("shioaji", "buy", 1)
         assert ok is False
 
 
@@ -144,7 +144,7 @@ class TestConsecutiveLossCooldown:
         rm.record_fill("shioaji", -100.0)
         rm.record_fill("shioaji", -100.0)  # 3rd consecutive loss
 
-        ok, reason = rm.check_order("shioaji", "buy", 1, 0)
+        ok, reason = rm.check_order("shioaji", "buy", 1)
         assert ok is False
         assert "cooldown" in reason.lower()
 
@@ -155,7 +155,7 @@ class TestConsecutiveLossCooldown:
         rm.record_fill("shioaji", -100.0)
         rm.record_fill("shioaji", -100.0)
 
-        ok, _ = rm.check_order("shioaji", "buy", 1, 0)
+        ok, _ = rm.check_order("shioaji", "buy", 1)
         assert ok is True  # only 2 consecutive losses
 
     def test_cooldown_expires(self, rm):
@@ -165,7 +165,7 @@ class TestConsecutiveLossCooldown:
 
         time.sleep(2.5)  # cooldown is 2 seconds
 
-        ok, _ = rm.check_order("shioaji", "buy", 1, 0)
+        ok, _ = rm.check_order("shioaji", "buy", 1)
         assert ok is True
 
 
@@ -173,15 +173,19 @@ class TestHaltAndResume:
     def test_halt_blocks_all_orders(self, rm):
         rm.record_fill("shioaji", -10_001.0)
         assert rm.is_halted is True
-        ok, _ = rm.check_order("shioaji", "buy", 1, 0)
+        ok, _ = rm.check_order("shioaji", "buy", 1)
         assert ok is False
 
     def test_resume_trading(self, rm):
         rm.record_fill("shioaji", -10_001.0)
         assert rm.is_halted is True
 
+        halted_status = rm.get_status()
+        assert halted_status["halted_since"]
+
         rm.resume_trading()
         assert rm.is_halted is False
+        assert rm.get_status()["halted_since"] == ""
 
     def test_daily_reset(self, rm):
         rm.record_fill("shioaji", -5000.0)
