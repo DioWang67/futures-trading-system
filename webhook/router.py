@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from loguru import logger
+from pydantic import ValidationError
 
 from config import settings
 from webhook.validator import (
@@ -88,8 +89,11 @@ async def _verify_request(
     """Verify webhook authenticity. Raises HTTPException on failure."""
     secret = settings.webhook.secret.get_secret_value()
     if not secret:
+        # Secret absent is an operator error, not a client error — signal
+        # unavailability so load balancers back off instead of thinking
+        # the service is malfunctioning.
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail="Webhook secret not configured on server",
         )
 
@@ -124,18 +128,29 @@ async def _verify_request(
 
 @router.post("/webhook")
 async def handle_webhook(
-    payload: WebhookPayload,
     request: Request,
     x_signature: str = Header(default=""),
     x_timestamp: str = Header(default=""),
     x_webhook_secret: str = Header(default=""),
     x_idempotency_key: str = Header(default=""),
 ) -> dict:
-    """Receive TradingView webhook and route to both brokers."""
+    """Receive TradingView webhook and route to the matching broker.
+
+    HMAC is verified on the raw bytes **before** we let Pydantic parse
+    them, so an unauthenticated caller can't probe the schema by
+    watching the gap between 422 (validation) and 401/403 (auth) errors.
+    """
 
     # Read raw body for HMAC verification
     body = await request.body()
     await _verify_request(body, x_signature, x_timestamp, x_webhook_secret)
+
+    # Only parse the body after auth passes.
+    try:
+        payload = WebhookPayload.model_validate_json(body)
+    except ValidationError as exc:
+        logger.warning("Webhook rejected: invalid payload schema")
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
     received_at = datetime.now(timezone.utc).isoformat()
 

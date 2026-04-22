@@ -67,7 +67,6 @@ async def main() -> int:
     notifier = Notifier(
         telegram_token=settings.notification.telegram_bot_token.get_secret_value(),
         telegram_chat_id=settings.notification.telegram_chat_id,
-        line_notify_token=settings.notification.line_notify_token.get_secret_value(),
     )
 
     broker = ShioajiBroker(

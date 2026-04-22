@@ -49,10 +49,12 @@ def _build_secret_patterns() -> None:
         settings.webhook.secret.get_secret_value(),
         settings.admin.secret.get_secret_value(),
         settings.notification.telegram_bot_token.get_secret_value(),
-        settings.notification.line_notify_token.get_secret_value(),
     ]
+    # Require a meaningful length before we start wholesale-replacing
+    # substrings in logs; a 4-char secret like "test" would otherwise
+    # mask every occurrence of "test" in file paths, tracebacks, etc.
     for s in secrets:
-        if s and len(s) >= 4:
+        if s and len(s) >= 16:
             _SECRET_PATTERNS.append(re.compile(re.escape(s)))
 
 
@@ -138,7 +140,6 @@ async def lifespan(app: FastAPI):
     notifier = Notifier(
         telegram_token=settings.notification.telegram_bot_token.get_secret_value(),
         telegram_chat_id=settings.notification.telegram_chat_id,
-        line_notify_token=settings.notification.line_notify_token.get_secret_value(),
     )
 
     app.state.risk_manager = risk_manager
@@ -180,14 +181,17 @@ async def lifespan(app: FastAPI):
         logger.error("Rithmic startup failed (will continue without it): {}", e)
 
     if rithmic_broker is None:
-        # Stub broker that always returns "not connected"
+        # Stub broker that always returns "not connected". Leave
+        # supported_tickers empty so the webhook router rejects MES
+        # traffic outright rather than advertising a path that always
+        # errors.
         from position_state import PositionState
 
         class _StubBroker:
             position = PositionState("rithmic")
             broker_name = "rithmic"
             is_connected = False
-            supported_tickers = {"MES"}
+            supported_tickers: set[str] = set()
             async def place_order(self, *a, **kw):
                 return {"status": "error", "broker": "rithmic", "reason": "not installed"}
             async def disconnect(self):

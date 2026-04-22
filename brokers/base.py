@@ -104,8 +104,10 @@ class RateLimiter:
                 self._last_order_time = time.monotonic()
 
 
-# Global rate limiter (shared across brokers)
-_rate_limiter = RateLimiter(max_orders_per_second=2.0)
+# Default orders/second when the caller does not supply a rate limiter.
+# Kept conservative because both Shioaji and Rithmic have per-account
+# gateway throttles that go well beyond this.
+DEFAULT_ORDERS_PER_SECOND = 2.0
 
 # How long the reverse-order flow waits for the close leg to actually
 # fill (position back to flat) before sending the open leg. Market IOC
@@ -125,6 +127,7 @@ async def route_order(
     trade_store: Optional[TradeStore] = None,
     idempotency_key: str = "",
     reversal_fill_timeout: float = REVERSAL_FILL_TIMEOUT_SECONDS,
+    rate_limiter: Optional[RateLimiter] = None,
 ) -> dict:
     """Position-aware order routing shared by all brokers.
 
@@ -142,15 +145,28 @@ async def route_order(
     if not is_connected:
         return {"status": "error", "broker": broker_name, "reason": "not connected"}
 
+    # Each broker owns its throttle so Shioaji and Rithmic don't compete
+    # for the same 2 orders/sec budget. Fall back to a local one-shot
+    # limiter only if the caller didn't supply one (tests, scripts).
+    effective_rate_limiter = rate_limiter or RateLimiter(
+        max_orders_per_second=DEFAULT_ORDERS_PER_SECOND
+    )
+
     # Idempotency gate — MUST fire before any broker submit or any wait.
     # A reversal flow can be mid-wait_for_flat for up to several seconds
     # after the close leg has already hit the exchange; any retry that
     # slips in during that window must be treated as a duplicate, not
     # sent as a second close. The reservations table uses a PRIMARY
     # KEY on the idempotency key so this is an atomic claim.
+    #
+    # Exits are treated leniently: because "please flatten me" is
+    # risk-reducing, operators must be able to re-drive the same
+    # signal if the first attempt errored out. We still dedupe
+    # against committed orders, but we skip the exclusive reservation
+    # so a follow-up retry can proceed.
     if idempotency_key and trade_store:
         existing = trade_store.check_idempotency(idempotency_key)
-        if existing:
+        if existing and existing.get("id"):
             logger.warning(
                 "[{}] Duplicate order detected (key={}), returning cached result",
                 broker_name, idempotency_key,
@@ -161,21 +177,34 @@ async def route_order(
                 "original_order_id": existing.get("id"),
             }
 
-        claimed = trade_store.reserve_idempotency(idempotency_key, broker_name)
-        if not claimed:
-            # Another request won the race between our check and reserve.
-            # Re-read so we can include whatever id/metadata is now visible.
-            existing = trade_store.check_idempotency(idempotency_key)
-            logger.warning(
-                "[{}] Duplicate order detected via reservation race "
-                "(key={}), returning duplicate",
-                broker_name, idempotency_key,
-            )
-            return {
-                "status": "duplicate",
-                "broker": broker_name,
-                "original_order_id": (existing or {}).get("id"),
-            }
+        if action != "exit":
+            claimed = trade_store.reserve_idempotency(idempotency_key, broker_name)
+            if not claimed:
+                # Another request won the race between our check and reserve.
+                # Re-read so we can include whatever id/metadata is now visible.
+                existing = trade_store.check_idempotency(idempotency_key)
+                if existing and existing.get("id"):
+                    logger.warning(
+                        "[{}] Duplicate order detected via reservation race "
+                        "(key={}), returning duplicate",
+                        broker_name, idempotency_key,
+                    )
+                    return {
+                        "status": "duplicate",
+                        "broker": broker_name,
+                        "original_order_id": (existing or {}).get("id"),
+                    }
+                # An in-flight reservation exists but no committed order yet.
+                # Reject as concurrent rather than silently double-submitting.
+                logger.warning(
+                    "[{}] Concurrent order in flight (key={}), rejecting retry",
+                    broker_name, idempotency_key,
+                )
+                return {
+                    "status": "duplicate",
+                    "broker": broker_name,
+                    "original_order_id": None,
+                }
 
     async def _submit_tracked(
         order_action: str,
@@ -190,7 +219,7 @@ async def route_order(
                 broker_name, order_action, order_qty,
                 idempotency_key=idem,
             )
-        await _rate_limiter.wait_async()
+        await effective_rate_limiter.wait_async()
         try:
             result = await submit_fn(order_action, order_qty)
         except Exception as exc:

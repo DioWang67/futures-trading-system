@@ -45,6 +45,7 @@ jobs:
         run: pytest tests/ -v --tb=short --cov=. --cov-report=term-missing
         env:
           WEBHOOK_SECRET: "test-secret-for-ci"
+          ADMIN_SECRET: "test-admin-secret-for-ci"
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'

@@ -93,9 +93,14 @@ def verify_hmac_signature(
 
 def verify_timestamp(
     timestamp: str,
-    max_drift_seconds: int = 30,
+    max_drift_seconds: int = 120,
 ) -> bool:
-    """Reject webhooks older than max_drift_seconds (replay protection)."""
+    """Reject webhooks older than max_drift_seconds (replay protection).
+
+    Accepts either seconds or milliseconds since epoch — TradingView's
+    ``{{timenow}}`` format isn't contractually stable between chart
+    versions, and some senders use millisecond precision.
+    """
     try:
         ts = int(timestamp)
     except (ValueError, TypeError):
@@ -103,6 +108,10 @@ def verify_timestamp(
             ts = int(float(timestamp))
         except (ValueError, TypeError):
             return False
+
+    # Heuristic: anything > ~year 2286 in seconds is almost certainly ms.
+    if ts > 10_000_000_000:
+        ts = ts // 1000
 
     now = int(time.time())
     return abs(now - ts) <= max_drift_seconds

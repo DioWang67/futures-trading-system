@@ -3,7 +3,7 @@
 See [ROADMAP.md](ROADMAP.md) for the current TMF live-trading gaps and next-step plan.
 
 TradingView webhook 自動化交易系統，同時路由訊號到：
-- **永豐金證券 (Shioaji)** — 台灣 MXF 小台指期貨
+- **永豐金證券 (Shioaji)** — 台灣 TMF 微型台指期貨（預設；可透過 `SHIOAJI_FUTURES_SYMBOL` 切換為 MXF / TXF）
 - **Lucid Trading Prop Firm (Rithmic)** — CME MES 微型 E-mini S&P 500
 
 ## 功能特色
@@ -75,7 +75,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
   "action": "buy",
   "sentiment": "long",
   "quantity": 1,
-  "ticker": "MXF",
+  "ticker": "TMF",
   "price": "{{close}}",
   "time": "{{timenow}}"
 }

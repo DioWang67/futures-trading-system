@@ -21,7 +21,10 @@ EnvironmentFile=/opt/trading-bot/.env
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/trading-bot/logs /opt/trading-bot/data /opt/trading-bot/reports
+# .tmp holds the Shioaji simulation runtime files (SJ_LOG_PATH, etc.)
+# and the local-paper-runner state JSON; the service crashes on
+# startup without write access here.
+ReadWritePaths=/opt/trading-bot/logs /opt/trading-bot/data /opt/trading-bot/reports /opt/trading-bot/.tmp
 PrivateTmp=yes
 
 # Logging

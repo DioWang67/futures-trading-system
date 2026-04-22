@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,22 @@ DEFAULT_STATE_PATH = ROOT / ".tmp" / "local_paper_state.json"
 DEFAULT_DB_PATH = ROOT / "data" / "trades.db"
 
 app = FastAPI(title="Paper Trading Dashboard", version="1.2.0")
+
+# Reuse a single TradeStore per database path; instantiating one per
+# request leaks a thread-local sqlite connection each time the
+# browser polls (every 5s in the default dashboard).
+_trade_store_lock = threading.Lock()
+_trade_stores: dict[str, TradeStore] = {}
+
+
+def _get_trade_store(db_path: Path) -> TradeStore:
+    key = str(db_path)
+    with _trade_store_lock:
+        store = _trade_stores.get(key)
+        if store is None:
+            store = TradeStore(db_path=db_path)
+            _trade_stores[key] = store
+        return store
 
 
 def _utc_now() -> datetime:
@@ -59,7 +76,7 @@ def _iso_age_seconds(value: str) -> float | None:
 
 def _safe_trade_store_payload(db_path: Path) -> dict[str, Any]:
     try:
-        store = TradeStore(db_path=db_path)
+        store = _get_trade_store(db_path)
         position = store.get_latest_position("shioaji") or {
             "side": "flat",
             "quantity": 0,

@@ -56,6 +56,13 @@ class RiskManager:
 
     def __init__(self, config: Optional[RiskConfig] = None) -> None:
         self._config = config or RiskConfig()
+        if self._config.initial_capital <= 0:
+            # Drawdown % and PnL-pct limits both scale off this; a zero
+            # or negative value silently disables both circuit breakers.
+            raise ValueError(
+                "RiskConfig.initial_capital must be > 0; "
+                f"got {self._config.initial_capital}"
+            )
         self._lock = threading.Lock()
         self._daily: dict[str, DailyPnL] = {}  # broker_name -> DailyPnL
         self._portfolio_daily = DailyPnL()

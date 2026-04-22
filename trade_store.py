@@ -240,14 +240,18 @@ class TradeStore:
         idempotency_key: str = "",
         broker_order_id: str = "",
     ) -> int:
-        """Record a new order. Returns the order ID."""
+        """Record a new order in ``pending`` state. Returns the order ID.
+
+        The caller is expected to flip it to ``submitted`` once the
+        broker accepts the order, or to ``error`` if submission fails.
+        """
         now = datetime.now(timezone.utc).isoformat()
         with self._cursor() as cur:
             cur.execute(
                 """INSERT INTO orders
                    (idempotency_key, broker, action, quantity, status,
                     created_at, broker_order_id)
-                   VALUES (?, ?, ?, ?, 'submitted', ?, ?)""",
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
                 (idempotency_key or None, broker, action, quantity,
                  now, broker_order_id),
             )
@@ -317,16 +321,23 @@ class TradeStore:
         fill_qty: int = 0,
         broker_order_id: str = "",
     ) -> Optional[int]:
-        """Attribute a fill to the oldest still-open order for
+        """Attribute a fill to the best-matching still-open order for
         ``(broker, action)``.
 
-        Because brokers don't always give us a stable order_id to
-        correlate on, we match the oldest order that is not yet fully
-        filled (status in ``submitted`` or ``partially_filled``).
+        Matching precedence:
+          1. If ``broker_order_id`` is supplied and a row is tagged
+             with it, use that row.
+          2. Prefer the oldest order whose **remaining** quantity
+             equals ``fill_qty`` — this keeps two same-direction orders
+             from cross-contaminating when the exchange reports their
+             fills out of order.
+          3. Fall back to the oldest order that still has remaining
+             capacity for ``fill_qty``.
+          4. Last resort: oldest open order regardless of remaining qty.
+
         The order's ``filled_qty`` is advanced by ``fill_qty``; the
-        status becomes ``filled`` only once cumulative filled_qty
-        reaches the original order quantity, otherwise it becomes
-        ``partially_filled``.
+        status becomes ``filled`` once cumulative filled_qty reaches
+        the original order quantity, otherwise ``partially_filled``.
 
         Returns the matched order id, or None if nothing is open.
         """
@@ -338,16 +349,40 @@ class TradeStore:
                     """SELECT id, quantity, filled_qty FROM orders
                        WHERE broker = ? AND action = ?
                          AND broker_order_id = ?
-                         AND status IN ('submitted', 'partially_filled')
+                         AND status IN ('submitted', 'partially_filled', 'pending')
                        ORDER BY id DESC LIMIT 1""",
                     (broker, action, broker_order_id),
                 )
                 row = cur.fetchone()
+            if row is None and fill_qty > 0:
+                # Prefer an order whose remaining quantity exactly matches
+                # this fill — avoids charging a small fill against a
+                # larger order while a smaller same-direction order is
+                # still outstanding.
+                cur.execute(
+                    """SELECT id, quantity, filled_qty FROM orders
+                       WHERE broker = ? AND action = ?
+                         AND status IN ('submitted', 'partially_filled', 'pending')
+                         AND (quantity - COALESCE(filled_qty, 0)) = ?
+                       ORDER BY id ASC LIMIT 1""",
+                    (broker, action, int(fill_qty)),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    cur.execute(
+                        """SELECT id, quantity, filled_qty FROM orders
+                           WHERE broker = ? AND action = ?
+                             AND status IN ('submitted', 'partially_filled', 'pending')
+                             AND (quantity - COALESCE(filled_qty, 0)) >= ?
+                           ORDER BY id ASC LIMIT 1""",
+                        (broker, action, int(fill_qty)),
+                    )
+                    row = cur.fetchone()
             if row is None:
                 cur.execute(
                     """SELECT id, quantity, filled_qty FROM orders
                        WHERE broker = ? AND action = ?
-                         AND status IN ('submitted', 'partially_filled')
+                         AND status IN ('submitted', 'partially_filled', 'pending')
                        ORDER BY id ASC LIMIT 1""",
                     (broker, action),
                 )

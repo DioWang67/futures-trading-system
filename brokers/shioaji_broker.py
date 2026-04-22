@@ -18,7 +18,7 @@ from config import settings
 from position_state import PositionState
 from risk_manager import RiskManager
 from trade_store import TradeStore
-from brokers.base import compute_realized_pnl, route_order
+from brokers.base import RateLimiter, compute_realized_pnl, route_order
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -64,6 +64,13 @@ class ProtectiveExit:
 class ShioajiBroker:
     """Shioaji broker for TAIFEX futures with local protective exits."""
 
+    # Prefix attached to close-only reasons that *this* broker's watchdog
+    # raises. The watchdog only clears the flag when the current reason
+    # starts with this prefix, so unrelated close-only states (session
+    # down, login failure, protective-exit submission failure) persist
+    # until the path that set them clears them.
+    _WATCHDOG_CLOSE_ONLY_PREFIX = "watchdog: "
+
     def __init__(
         self,
         risk_manager: Optional[RiskManager] = None,
@@ -107,6 +114,10 @@ class ShioajiBroker:
         )
         self._watchdog_last_reason = ""
         self._watchdog_alert_sent = False
+        self._rate_limiter = RateLimiter(max_orders_per_second=2.0)
+        # Serialises reconnect so a webhook landing mid-refresh either
+        # sees the stable pre-refresh api or waits for the fresh one.
+        self._reconnect_lock = threading.Lock()
 
     @property
     def broker_name(self) -> str:
@@ -288,6 +299,20 @@ class ShioajiBroker:
             self._risk_manager.set_close_only(
                 True, "Shioaji session down; new entries blocked",
             )
+        # Persist the event independently of the notifier so we still
+        # have an audit trail when Telegram is down or this callback
+        # fires with no running event loop attached.
+        if self._trade_store:
+            try:
+                self._trade_store.record_risk_event(
+                    "broker_session_down",
+                    "shioaji",
+                    f"session down for {self._futures_symbol}; switched to close-only",
+                )
+            except Exception as exc:
+                logger.error(
+                    "[Shioaji] Failed to record session-down event: {}", exc,
+                )
         if self._notifier:
             self._schedule_coroutine(
                 self._notifier.send_error(
@@ -734,11 +759,17 @@ class ShioajiBroker:
         self._watchdog_last_reason = reason
         if self._risk_manager:
             if reason:
-                self._risk_manager.set_close_only(True, reason)
+                # Prefix so we can distinguish our own assertions from
+                # close-only flags raised by the login / session / protective
+                # exit paths. Only watchdog can clear its own flag.
+                self._risk_manager.set_close_only(
+                    True, self._WATCHDOG_CLOSE_ONLY_PREFIX + reason,
+                )
             elif (
                 self._risk_manager.is_close_only
-                and previous_reason
-                and self._risk_manager.close_only_reason == previous_reason
+                and self._risk_manager.close_only_reason.startswith(
+                    self._WATCHDOG_CLOSE_ONLY_PREFIX
+                )
             ):
                 self._risk_manager.set_close_only(False)
 
@@ -836,11 +867,16 @@ class ShioajiBroker:
                     f"Shioaji reconnect started for {self._futures_symbol}"
                 )
             )
-        try:
-            self.logout()
-        except Exception:
-            pass
-        self.login()
+        # Hold the reconnect lock across the entire logout+login so any
+        # concurrent order submit (which also grabs this lock) either
+        # runs against a fully-initialised api or is rejected cleanly
+        # as "not connected".
+        with self._reconnect_lock:
+            try:
+                self.logout()
+            except Exception:
+                pass
+            self.login()
 
     # ------------------------------------------------------------------
     # Position sync
@@ -866,13 +902,35 @@ class ShioajiBroker:
                 )
                 entry_price = _safe_float(raw_price, 0.0)
                 if entry_price <= 0:
-                    logger.warning(
-                        "[Shioaji] Synced position {} x{} but broker did not "
-                        "supply an average cost; realized PnL will be 0 until "
-                        "next round trip",
-                        side,
-                        qty,
+                    # Broker didn't return an average cost. Trust the last
+                    # persisted snapshot if it matches this side/quantity —
+                    # otherwise realized PnL would be silently reported as
+                    # zero on the next close, which defeats the daily-loss
+                    # risk gate.
+                    fallback_price = self._recover_entry_price_from_store(
+                        side, qty
                     )
+                    if fallback_price > 0:
+                        entry_price = fallback_price
+                        logger.warning(
+                            "[Shioaji] Synced {} x{} without broker avg cost; "
+                            "recovered entry_price={} from local snapshot",
+                            side, qty, entry_price,
+                        )
+                    else:
+                        logger.error(
+                            "[Shioaji] Synced {} x{} without broker avg cost "
+                            "and no usable local snapshot; entering close-only "
+                            "mode (operator must reconcile PnL manually)",
+                            side, qty,
+                        )
+                        if self._risk_manager:
+                            self._risk_manager.set_close_only(
+                                True,
+                                f"shioaji synced {side}x{qty} with unknown "
+                                f"avg cost; PnL reporting is disabled until "
+                                f"operator reconciles",
+                            )
                 self.position.update_position(
                     side, qty, entry_price=entry_price,
                 )
@@ -905,6 +963,29 @@ class ShioajiBroker:
                 return
 
         logger.info("[Shioaji] Starting with flat position")
+
+    def _recover_entry_price_from_store(self, side: str, qty: int) -> float:
+        """Best-effort lookup of the last persisted entry price when the
+        broker fails to return an average cost after a reconnect."""
+        if not self._trade_store:
+            return 0.0
+        try:
+            snapshot = self._trade_store.get_latest_position("shioaji")
+        except Exception as exc:
+            logger.warning(
+                "[Shioaji] Failed to load position snapshot while "
+                "recovering entry price: {}",
+                exc,
+            )
+            return 0.0
+        if not snapshot:
+            return 0.0
+        if snapshot.get("side") != side:
+            return 0.0
+        if int(snapshot.get("quantity") or 0) != int(qty):
+            return 0.0
+        price = _safe_float(snapshot.get("entry_price"), 0.0)
+        return price if price > 0 else 0.0
 
     def _order_callback(self, stat: Any, msg: dict) -> None:
         """Callback for order status and fill updates."""
@@ -1064,11 +1145,21 @@ class ShioajiBroker:
         normalized = str(price_type or "MKT").strip().upper()
         if normalized not in {"MKT", "MKP", "LMT"}:
             normalized = "MKT"
-        return normalized, getattr(
-            sj.constant.FuturesPriceType,
-            normalized,
-            sj.constant.FuturesPriceType.MKT,
-        )
+        resolved = getattr(sj.constant.FuturesPriceType, normalized, None)
+        if resolved is None:
+            # Mismatch between the configured price type and the installed
+            # shioaji SDK. MKP in particular was introduced in later SDKs;
+            # fall back to MKT loudly rather than silently.
+            logger.error(
+                "[Shioaji] FuturesPriceType.{} not found in shioaji SDK "
+                "({}); falling back to MKT. Upgrade shioaji or choose a "
+                "different SHIOAJI_PROTECTIVE_EXIT_PRICE_TYPE.",
+                normalized,
+                getattr(sj, "__version__", "unknown"),
+            )
+            normalized = "MKT"
+            resolved = sj.constant.FuturesPriceType.MKT
+        return normalized, resolved
 
     def _submit_order_sync(
         self,
@@ -1078,6 +1169,14 @@ class ShioajiBroker:
         price_type: str = "",
         limit_price: float = 0.0,
     ) -> dict:
+        # Reject early if the broker is mid-reconnect or hasn't finished
+        # login yet — otherwise we'd dereference a half-torn api handle.
+        with self._reconnect_lock:
+            if self.api is None or not self._connected:
+                return {
+                    "status": "error",
+                    "reason": "shioaji api not ready (reconnecting or disconnected)",
+                }
         contract = self._contracts.get(ticker)
         if contract is None:
             return {"status": "error", "reason": f"unsupported ticker: {ticker}"}
@@ -1226,7 +1325,12 @@ class ShioajiBroker:
             return {
                 "status": "error",
                 "broker": self.broker_name,
-                "reason": f"unsupported ticker: {ticker}",
+                "reason": (
+                    f"unsupported ticker: {ticker}; "
+                    f"Shioaji broker is configured for "
+                    f"{self._futures_symbol} "
+                    f"(set SHIOAJI_FUTURES_SYMBOL to change)"
+                ),
             }
         price_type = str(kwargs.get("price_type") or "").strip().upper()
         limit_price = _safe_float(kwargs.get("limit_price"), 0.0)
@@ -1247,4 +1351,5 @@ class ShioajiBroker:
             risk_manager=self._risk_manager,
             trade_store=self._trade_store,
             idempotency_key=idempotency_key,
+            rate_limiter=self._rate_limiter,
         )

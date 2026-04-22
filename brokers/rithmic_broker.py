@@ -10,7 +10,7 @@ from config import settings
 from position_state import PositionState
 from risk_manager import RiskManager
 from trade_store import TradeStore
-from brokers.base import compute_realized_pnl, route_order
+from brokers.base import RateLimiter, compute_realized_pnl, route_order
 
 
 # MES contract multiplier: 5 USD per index point
@@ -36,6 +36,7 @@ class RithmicBroker:
         self._risk_manager = risk_manager
         self._trade_store = trade_store
         self._notifier = notifier
+        self._rate_limiter = RateLimiter(max_orders_per_second=2.0)
 
     @property
     def broker_name(self) -> str:
@@ -256,4 +257,5 @@ class RithmicBroker:
             risk_manager=self._risk_manager,
             trade_store=self._trade_store,
             idempotency_key=idempotency_key,
+            rate_limiter=self._rate_limiter,
         )

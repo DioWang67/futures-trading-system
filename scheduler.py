@@ -8,7 +8,8 @@ Background schedulers:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
@@ -17,6 +18,14 @@ MAX_RETRIES = 5
 INITIAL_RETRY_DELAY = 60  # 1 minute
 
 HEALTH_CHECK_INTERVAL = 30  # seconds
+
+# Taiwan market opens at 08:45 TAIFEX time; reset counters 15 minutes before
+# so the new-day windows are ready when orders can start flowing. We use an
+# explicit tzinfo because Docker / systemd containers typically run in UTC,
+# and datetime.now() there would reset 8 hours off.
+RISK_RESET_TZ = ZoneInfo("Asia/Taipei")
+RISK_RESET_HOUR = 8
+RISK_RESET_MINUTE = 30
 
 
 async def shioaji_token_refresh_loop(shioaji_broker: object) -> None:
@@ -109,18 +118,24 @@ async def broker_health_monitor(
 
 
 async def daily_risk_reset_loop(risk_manager: object) -> None:
-    """Reset daily risk counters at market open (08:30 TW time)."""
+    """Reset daily risk counters at 08:30 Asia/Taipei."""
     while True:
-        now = datetime.now()
-        # Next 08:30 — use timedelta so month/year rollovers work.
-        reset_time = now.replace(hour=8, minute=30, second=0, microsecond=0)
+        now = datetime.now(tz=RISK_RESET_TZ)
+        reset_time = now.replace(
+            hour=RISK_RESET_HOUR,
+            minute=RISK_RESET_MINUTE,
+            second=0,
+            microsecond=0,
+        )
         if now >= reset_time:
             reset_time = reset_time + timedelta(days=1)
 
         wait_seconds = (reset_time - now).total_seconds()
         logger.info(
-            "[Scheduler] Daily risk reset scheduled in {:.0f}s (at {})",
-            wait_seconds, reset_time.strftime("%H:%M"),
+            "[Scheduler] Daily risk reset scheduled in {:.0f}s (at {} {})",
+            wait_seconds,
+            reset_time.strftime("%Y-%m-%d %H:%M"),
+            RISK_RESET_TZ.key,
         )
         await asyncio.sleep(wait_seconds)
 

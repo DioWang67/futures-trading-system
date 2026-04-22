@@ -143,8 +143,13 @@ class WebhookSettings(BaseSettings):
         alias="WEBHOOK_SECRET",
     )
     max_timestamp_drift_seconds: int = Field(
-        default=30,
-        description="Max allowed age of webhook timestamp (replay protection)",
+        default=120,
+        description=(
+            "Max allowed age of webhook timestamp (replay protection). "
+            "TradingView webhooks commonly land 10-30 seconds after the "
+            "bar closes and server clocks drift a few seconds between "
+            "pods; 30s was too tight in practice."
+        ),
     )
     allow_legacy_secret_header: bool = Field(
         default=False,
@@ -204,10 +209,6 @@ class NotificationSettings(BaseSettings):
         alias="TELEGRAM_BOT_TOKEN",
     )
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
-    line_notify_token: SecretStr = Field(
-        default=SecretStr(""),
-        alias="LINE_NOTIFY_TOKEN",
-    )
 
 
 class Settings(BaseSettings):

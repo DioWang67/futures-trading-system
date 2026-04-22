@@ -29,7 +29,7 @@ def main() -> int:
     parser.add_argument("--action", choices=("buy", "sell", "exit"), default="buy")
     parser.add_argument("--sentiment", choices=("long", "short", "flat"), default="long")
     parser.add_argument("--quantity", type=int, default=1)
-    parser.add_argument("--ticker", default="MXF")
+    parser.add_argument("--ticker", default="TMF")
     parser.add_argument("--type", dest="signal_type", choices=("entry", "exit", "eod_close"), default="entry")
     args = parser.parse_args()
 

@@ -175,9 +175,11 @@ def htf_indicators(df: pd.DataFrame, tf: str, ema_period: int = 20) -> pd.DataFr
     htf_ema_shifted = htf_ema.shift(1)
     htf_vwap_shifted = htf_vwap.shift(1)
 
+    # pandas 2.1 deprecated the ``method=`` kwarg on reindex; do the fill
+    # explicitly so we keep working on 2.2+.
     result = pd.DataFrame(index=df.index)
-    result["htf_ema"] = htf_ema_shifted.reindex(df.index, method="ffill")
-    result["htf_vwap"] = htf_vwap_shifted.reindex(df.index, method="ffill")
+    result["htf_ema"] = htf_ema_shifted.reindex(df.index).ffill()
+    result["htf_vwap"] = htf_vwap_shifted.reindex(df.index).ffill()
     return result
 
 
