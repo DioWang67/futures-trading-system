@@ -7,6 +7,7 @@ import hmac
 import time
 from types import SimpleNamespace
 import importlib
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -119,3 +120,21 @@ class TestAdminControlAuth:
         monkeypatch.setattr(main.settings.admin, "secret", SecretStr("admin-secret"))
         with pytest.raises(HTTPException, match="Invalid admin secret"):
             main._require_admin_secret("wrong-secret")
+
+
+class TestSharedSecretValidation:
+    def test_require_webhook_rejects_short_secret(self, monkeypatch):
+        monkeypatch.setattr(main.settings.webhook, "secret", SecretStr("short-secret"))
+        with pytest.raises(ValueError, match="at least 16 characters"):
+            main.settings.require_webhook()
+
+    def test_require_admin_rejects_short_secret(self, monkeypatch):
+        monkeypatch.setattr(main.settings.admin, "secret", SecretStr("short-admin"))
+        with pytest.raises(ValueError, match="at least 16 characters"):
+            main.settings.require_admin()
+
+
+class TestDeployFiles:
+    def test_dockerfile_installs_tzdata_for_zoneinfo(self):
+        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        assert "tzdata" in dockerfile

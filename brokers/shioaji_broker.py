@@ -117,7 +117,7 @@ class ShioajiBroker:
         self._rate_limiter = RateLimiter(max_orders_per_second=2.0)
         # Serialises reconnect so a webhook landing mid-refresh either
         # sees the stable pre-refresh api or waits for the fresh one.
-        self._reconnect_lock = threading.Lock()
+        self._reconnect_lock = threading.RLock()
 
     @property
     def broker_name(self) -> str:
@@ -793,67 +793,73 @@ class ShioajiBroker:
     # ------------------------------------------------------------------
     def login(self) -> None:
         cfg = settings.shioaji
-        try:
-            self._prepare_runtime_environment()
-            self.api = sj.Shioaji(simulation=cfg.simulation)
-            self.api.login(
-                api_key=cfg.api_key.get_secret_value(),
-                secret_key=cfg.secret_key.get_secret_value(),
-                contracts_timeout=10_000,
-                subscribe_trade=True,
-            )
-
-            if not cfg.simulation and cfg.ca_path:
-                self.api.activate_ca(
-                    ca_path=cfg.ca_path,
-                    ca_passwd=cfg.ca_password.get_secret_value(),
+        with self._reconnect_lock:
+            try:
+                self._prepare_runtime_environment()
+                self.api = sj.Shioaji(simulation=cfg.simulation)
+                self.api.login(
+                    api_key=cfg.api_key.get_secret_value(),
+                    secret_key=cfg.secret_key.get_secret_value(),
+                    contracts_timeout=10_000,
+                    subscribe_trade=True,
                 )
-            elif cfg.simulation:
-                logger.info("[Shioaji] Running in simulation / paper-trading mode")
 
-            contract = self._resolve_contract(self._futures_symbol)
-            self._contracts[self._futures_symbol] = contract
-            self.api.set_order_callback(self._order_callback)
-            self.api.set_session_down_callback(self._handle_session_down)
-            self._register_quote_monitor(contract)
-            self._sync_position()
-            self._connected = True
-            if self._risk_manager:
-                self._risk_manager.set_close_only(False)
-            logger.info(
-                "[Shioaji] Login successful ({}) symbol={} contract={} point_value={}",
-                "simulation" if cfg.simulation else "live",
-                self._futures_symbol,
-                getattr(contract, "code", self._futures_symbol),
-                self._point_value,
-            )
-            if self._notifier:
-                self._schedule_coroutine(
-                    self._notifier.send_system(
-                        "Shioaji ready: "
-                        f"{self._futures_symbol} "
-                        f"({'simulation' if cfg.simulation else 'live'}) "
-                        f"protective={self._protective_exit_price_type}"
+                if not cfg.simulation and cfg.ca_path:
+                    self.api.activate_ca(
+                        ca_path=cfg.ca_path,
+                        ca_passwd=cfg.ca_password.get_secret_value(),
                     )
+                elif cfg.simulation:
+                    logger.info("[Shioaji] Running in simulation / paper-trading mode")
+
+                contract = self._resolve_contract(self._futures_symbol)
+                self._contracts[self._futures_symbol] = contract
+                self.api.set_order_callback(self._order_callback)
+                self.api.set_session_down_callback(self._handle_session_down)
+                self._register_quote_monitor(contract)
+                self._sync_position()
+                self._connected = True
+                if self._risk_manager:
+                    self._risk_manager.set_close_only(False)
+                logger.info(
+                    "[Shioaji] Login successful ({}) symbol={} contract={} point_value={}",
+                    "simulation" if cfg.simulation else "live",
+                    self._futures_symbol,
+                    getattr(contract, "code", self._futures_symbol),
+                    self._point_value,
                 )
-        except Exception as e:
-            logger.error("[Shioaji] Login failed: {}", e)
-            self._connected = False
-            if self._risk_manager:
-                self._risk_manager.set_close_only(
-                    True, f"Shioaji login failed: {e}",
-                )
-            raise
+                if self._notifier:
+                    self._schedule_coroutine(
+                        self._notifier.send_system(
+                            "Shioaji ready: "
+                            f"{self._futures_symbol} "
+                            f"({'simulation' if cfg.simulation else 'live'}) "
+                            f"protective={self._protective_exit_price_type}"
+                        )
+                    )
+            except Exception as e:
+                logger.error("[Shioaji] Login failed: {}", e)
+                self._connected = False
+                self.api = None
+                self._contracts.clear()
+                if self._risk_manager:
+                    self._risk_manager.set_close_only(
+                        True, f"Shioaji login failed: {e}",
+                    )
+                raise
 
     def logout(self) -> None:
-        if self.api:
-            try:
-                self.api.logout()
-                logger.info("[Shioaji] Logged out")
-            except Exception as e:
-                logger.error("[Shioaji] Logout error: {}", e)
-            finally:
-                self._connected = False
+        with self._reconnect_lock:
+            api = self.api
+            if api:
+                try:
+                    api.logout()
+                    logger.info("[Shioaji] Logged out")
+                except Exception as e:
+                    logger.error("[Shioaji] Logout error: {}", e)
+            self.api = None
+            self._contracts.clear()
+            self._connected = False
 
     def reconnect(self) -> None:
         logger.info("[Shioaji] Reconnecting (token refresh)...")
@@ -867,10 +873,8 @@ class ShioajiBroker:
                     f"Shioaji reconnect started for {self._futures_symbol}"
                 )
             )
-        # Hold the reconnect lock across the entire logout+login so any
-        # concurrent order submit (which also grabs this lock) either
-        # runs against a fully-initialised api or is rejected cleanly
-        # as "not connected".
+        # Keep logout+login atomic against submits. The lock is reentrant so
+        # the nested calls below stay serialized with _submit_order_sync.
         with self._reconnect_lock:
             try:
                 self.logout()
@@ -1171,31 +1175,34 @@ class ShioajiBroker:
     ) -> dict:
         # Reject early if the broker is mid-reconnect or hasn't finished
         # login yet — otherwise we'd dereference a half-torn api handle.
-        with self._reconnect_lock:
-            if self.api is None or not self._connected:
-                return {
-                    "status": "error",
-                    "reason": "shioaji api not ready (reconnecting or disconnected)",
-                }
-        contract = self._contracts.get(ticker)
-        if contract is None:
-            return {"status": "error", "reason": f"unsupported ticker: {ticker}"}
-
-        sj_action = sj.constant.Action.Buy if action == "Buy" else sj.constant.Action.Sell
         normalized_price_type, sj_price_type = self._resolve_price_type(price_type)
         order_price = float(limit_price or 0.0) if normalized_price_type == "LMT" else 0.0
-        order = self.api.Order(
-            price=order_price,
-            quantity=quantity,
-            action=sj_action,
-            price_type=sj_price_type,
-            order_type=sj.constant.OrderType.IOC,
-            octype=sj.constant.FuturesOCType.Auto,
-            account=self.api.futopt_account,
-        )
 
         try:
-            trade = self.api.place_order(contract, order)
+            # Hold the session lock through contract lookup and place_order so
+            # logout/relogin cannot swap out ``self.api`` mid-submit.
+            with self._reconnect_lock:
+                api = self.api
+                if api is None or not self._connected:
+                    return {
+                        "status": "error",
+                        "reason": "shioaji api not ready (reconnecting or disconnected)",
+                    }
+                contract = self._contracts.get(ticker)
+                if contract is None:
+                    return {"status": "error", "reason": f"unsupported ticker: {ticker}"}
+
+                sj_action = sj.constant.Action.Buy if action == "Buy" else sj.constant.Action.Sell
+                order = api.Order(
+                    price=order_price,
+                    quantity=quantity,
+                    action=sj_action,
+                    price_type=sj_price_type,
+                    order_type=sj.constant.OrderType.IOC,
+                    octype=sj.constant.FuturesOCType.Auto,
+                    account=api.futopt_account,
+                )
+                trade = api.place_order(contract, order)
         except Exception as exc:
             if self._simulation and "api/v1/paper/place_order" in str(exc):
                 logger.warning(
@@ -1210,6 +1217,8 @@ class ShioajiBroker:
                     "quantity": quantity,
                     "ticker": ticker,
                     "reason": "simulation submit accepted but API raised",
+                    "price_type": normalized_price_type,
+                    "limit_price": order_price,
                 }
             raise
 

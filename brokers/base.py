@@ -159,11 +159,11 @@ async def route_order(
     # sent as a second close. The reservations table uses a PRIMARY
     # KEY on the idempotency key so this is an atomic claim.
     #
-    # Exits are treated leniently: because "please flatten me" is
-    # risk-reducing, operators must be able to re-drive the same
-    # signal if the first attempt errored out. We still dedupe
-    # against committed orders, but we skip the exclusive reservation
-    # so a follow-up retry can proceed.
+    # Idempotency keys are single-use for every action, including exits.
+    # A duplicate flatten is not harmless: if the first close already
+    # hit the market, a second close can reopen exposure in the opposite
+    # direction. Operators who intentionally want to re-drive a signal
+    # after an ambiguous failure must send a fresh key.
     if idempotency_key and trade_store:
         existing = trade_store.check_idempotency(idempotency_key)
         if existing and existing.get("id"):
@@ -177,34 +177,33 @@ async def route_order(
                 "original_order_id": existing.get("id"),
             }
 
-        if action != "exit":
-            claimed = trade_store.reserve_idempotency(idempotency_key, broker_name)
-            if not claimed:
-                # Another request won the race between our check and reserve.
-                # Re-read so we can include whatever id/metadata is now visible.
-                existing = trade_store.check_idempotency(idempotency_key)
-                if existing and existing.get("id"):
-                    logger.warning(
-                        "[{}] Duplicate order detected via reservation race "
-                        "(key={}), returning duplicate",
-                        broker_name, idempotency_key,
-                    )
-                    return {
-                        "status": "duplicate",
-                        "broker": broker_name,
-                        "original_order_id": (existing or {}).get("id"),
-                    }
-                # An in-flight reservation exists but no committed order yet.
-                # Reject as concurrent rather than silently double-submitting.
+        claimed = trade_store.reserve_idempotency(idempotency_key, broker_name)
+        if not claimed:
+            # Another request won the race between our check and reserve.
+            # Re-read so we can include whatever id/metadata is now visible.
+            existing = trade_store.check_idempotency(idempotency_key)
+            if existing and existing.get("id"):
                 logger.warning(
-                    "[{}] Concurrent order in flight (key={}), rejecting retry",
+                    "[{}] Duplicate order detected via reservation race "
+                    "(key={}), returning duplicate",
                     broker_name, idempotency_key,
                 )
                 return {
                     "status": "duplicate",
                     "broker": broker_name,
-                    "original_order_id": None,
+                    "original_order_id": (existing or {}).get("id"),
                 }
+            # An in-flight reservation exists but no committed order yet.
+            # Reject as concurrent rather than silently double-submitting.
+            logger.warning(
+                "[{}] Concurrent order in flight (key={}), rejecting retry",
+                broker_name, idempotency_key,
+            )
+            return {
+                "status": "duplicate",
+                "broker": broker_name,
+                "original_order_id": None,
+            }
 
     async def _submit_tracked(
         order_action: str,

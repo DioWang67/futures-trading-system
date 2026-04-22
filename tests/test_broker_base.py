@@ -1,5 +1,8 @@
 """Tests for shared broker order-routing logic."""
 
+import asyncio
+import threading
+
 import pytest
 
 from position_state import PositionState
@@ -132,3 +135,90 @@ class TestRateLimiter:
         rl = RateLimiter(max_orders_per_second=1.0)
         assert rl.acquire() is True
         assert rl.acquire() is False  # too fast
+
+
+class TestIdempotencyRaces:
+    def test_concurrent_exit_retry_with_same_key_is_duplicate(self):
+        position = PositionState("test")
+        position.update_position("long", 1, entry_price=100.0)
+
+        class DummyStore:
+            def __init__(self):
+                self._barrier = threading.Barrier(2)
+                self._lock = threading.Lock()
+                self._reserved_keys: set[str] = set()
+                self._check_calls = 0
+
+            def check_idempotency(self, key: str):
+                with self._lock:
+                    self._check_calls += 1
+                    call_number = self._check_calls
+                if call_number <= 2:
+                    self._barrier.wait(timeout=5.0)
+                return None
+
+            def reserve_idempotency(self, key: str, broker: str) -> bool:
+                with self._lock:
+                    if key in self._reserved_keys:
+                        return False
+                    self._reserved_keys.add(key)
+                    return True
+
+            def record_order(
+                self,
+                broker: str,
+                action: str,
+                quantity: int,
+                idempotency_key: str = "",
+                broker_order_id: str = "",
+            ) -> int:
+                return 1
+
+            def update_order_status(self, *args, **kwargs):
+                return None
+
+            def set_broker_order_id(self, *args, **kwargs):
+                return None
+
+            def save_position_snapshot(self, *args, **kwargs):
+                return None
+
+        store = DummyStore()
+        submitted: list[tuple[str, int]] = []
+        submit_lock = threading.Lock()
+        results: list[dict] = []
+        errors: list[Exception] = []
+
+        async def submit_fn(action: str, quantity: int) -> dict:
+            with submit_lock:
+                submitted.append((action, quantity))
+            return {"status": "submitted", "action": action, "quantity": quantity}
+
+        def worker() -> None:
+            try:
+                result = asyncio.run(
+                    route_order(
+                        "test",
+                        position,
+                        "exit",
+                        0,
+                        submit_fn,
+                        True,
+                        trade_store=store,
+                        idempotency_key="exit-K1",
+                    )
+                )
+                results.append(result)
+            except Exception as exc:  # pragma: no cover - exercised on regression
+                errors.append(exc)
+
+        first = threading.Thread(target=worker)
+        second = threading.Thread(target=worker)
+        first.start()
+        second.start()
+        first.join()
+        second.join()
+
+        assert errors == []
+        assert sorted(result["status"] for result in results) == ["duplicate", "ok"]
+        assert submitted == [("Sell", 1)]

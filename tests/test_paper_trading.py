@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -397,6 +398,71 @@ class TestShioajiBrokerPaperMode:
         assert result["limit_price"] == 19945.0
         _, order = fake_api.order_requests[-1]
         assert order.price == 19945.0
+
+    def test_submit_order_sync_holds_session_lock_through_broker_call(self):
+        class BlockingContracts(dict):
+            def __init__(
+                self,
+                lookup_started: threading.Event,
+                mutation_attempted: threading.Event,
+                *args,
+                **kwargs,
+            ):
+                super().__init__(*args, **kwargs)
+                self.lookup_started = lookup_started
+                self.mutation_attempted = mutation_attempted
+
+            def get(self, key, default=None):
+                self.lookup_started.set()
+                assert self.mutation_attempted.wait(timeout=1.0)
+                return super().get(key, default)
+
+        lookup_started = threading.Event()
+        mutation_attempted = threading.Event()
+        mutation_finished = threading.Event()
+        fake_api = _FakeShioajiApi(simulation=True)
+        broker = shioaji_broker_module.ShioajiBroker.__new__(
+            shioaji_broker_module.ShioajiBroker
+        )
+        broker.api = fake_api
+        broker._connected = True
+        broker._simulation = False
+        broker._reconnect_lock = threading.RLock()
+        broker._extract_broker_order_id = lambda trade: "trade-id-1"
+        broker._contracts = BlockingContracts(
+            lookup_started,
+            mutation_attempted,
+            {"TMF": SimpleNamespace(code="TMFE6")},
+        )
+
+        results: dict[str, object] = {}
+        errors: list[Exception] = []
+
+        def submit_worker() -> None:
+            try:
+                results["value"] = broker._submit_order_sync("Buy", 1, "TMF")
+            except Exception as exc:  # pragma: no cover - exercised on regression
+                errors.append(exc)
+
+        def reconnect_worker() -> None:
+            assert lookup_started.wait(timeout=1.0)
+            mutation_attempted.set()
+            with broker._reconnect_lock:
+                broker.api = None
+                broker._connected = False
+            mutation_finished.set()
+
+        submit_thread = threading.Thread(target=submit_worker)
+        reconnect_thread = threading.Thread(target=reconnect_worker)
+        submit_thread.start()
+        reconnect_thread.start()
+        submit_thread.join()
+        reconnect_thread.join()
+
+        assert errors == []
+        assert results["value"]["status"] == "submitted"
+        assert len(fake_api.order_requests) == 1
+        assert mutation_finished.is_set()
 
     @pytest.mark.asyncio
     async def test_protective_event_records_fill_slippage(self, monkeypatch):

@@ -17,6 +17,8 @@ from typing import Optional
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+MIN_SHARED_SECRET_LENGTH = 16
+
 
 class ShioajiSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -260,17 +262,31 @@ class Settings(BaseSettings):
 
     def require_webhook(self) -> None:
         """Validate that webhook secret is set. Call at startup."""
-        if not self.webhook.secret.get_secret_value():
+        secret = self.webhook.secret.get_secret_value()
+        if not secret:
             raise ValueError(
                 "WEBHOOK_SECRET is required but not set. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if len(secret) < MIN_SHARED_SECRET_LENGTH:
+            raise ValueError(
+                "WEBHOOK_SECRET must be at least "
+                f"{MIN_SHARED_SECRET_LENGTH} characters long. "
                 "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
 
     def require_admin(self) -> None:
         """Validate that admin endpoint authentication is configured."""
-        if not self.admin.secret.get_secret_value():
+        secret = self.admin.secret.get_secret_value()
+        if not secret:
             raise ValueError(
                 "ADMIN_SECRET is required but not set. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if len(secret) < MIN_SHARED_SECRET_LENGTH:
+            raise ValueError(
+                "ADMIN_SECRET must be at least "
+                f"{MIN_SHARED_SECRET_LENGTH} characters long. "
                 "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
 
