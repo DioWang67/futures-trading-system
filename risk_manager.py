@@ -307,6 +307,8 @@ class RiskManager:
         with self._lock:
             self._daily.clear()
             self._portfolio_daily = DailyPnL()
+            # Start a fresh daily drawdown baseline from current equity.
+            self._peak_equity = self._current_equity
             logger.info("[RiskManager] Daily counters reset")
 
     def resume_trading(self) -> None:

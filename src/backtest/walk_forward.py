@@ -75,6 +75,17 @@ class WalkForwardValidator:
         n = len(df)
         segment_size = n // self.n_splits
         splits = []
+        strategy_cfg = self.config.get("strategy", {})
+        wf_cfg = self.config.get("walk_forward", {})
+        lookback = int(wf_cfg.get("lookback_period", 0) or 0)
+        lookback = max(
+            lookback,
+            int(strategy_cfg.get("swing_lookback", 0) or 0),
+            int(strategy_cfg.get("adx_period", 0) or 0),
+            int(strategy_cfg.get("ob_max_age", 0) or 0),
+        )
+        min_train_bars = int(wf_cfg.get("min_train_bars", max(50, lookback * 2)))
+        min_test_bars = int(wf_cfg.get("min_test_bars", max(20, lookback)))
 
         for i in range(self.n_splits):
             start = i * segment_size
@@ -85,8 +96,13 @@ class WalkForwardValidator:
             train = segment.iloc[:train_end_idx].copy()
             test = segment.iloc[train_end_idx:].copy()
 
-            if len(train) > 50 and len(test) > 20:
+            if len(train) >= min_train_bars and len(test) >= min_test_bars:
                 splits.append((train, test))
+            else:
+                logger.info(
+                    "跳過 WF 區段 {}: train={} (< {}?) test={} (< {}?)",
+                    i + 1, len(train), min_train_bars, len(test), min_test_bars,
+                )
 
         return splits
 

@@ -551,6 +551,7 @@ class ShioajiBroker:
         with self._protective_lock:
             protective = self._protective_exits.get(ticker)
             if protective:
+                protective.exit_sent = False
                 protective.status = "failed"
                 protective.trigger_reason = reason
                 protective.trigger_price = trigger_price
@@ -606,9 +607,8 @@ class ShioajiBroker:
     def _is_simulation_submit_timeout(self, exc: Exception) -> bool:
         if not self._simulation:
             return False
-        if isinstance(exc, sj_error.TimeoutError):
-            return str(getattr(exc, "topic", "") or "").strip() == "api/v1/paper/place_order"
-        return str(getattr(exc, "topic", "") or "").strip() == "api/v1/paper/place_order"
+        topic = str(getattr(exc, "topic", "") or "").strip()
+        return isinstance(exc, sj_error.TimeoutError) and topic == "api/v1/paper/place_order"
 
     def disarm_protective_exit(self, ticker: str) -> None:
         ticker = str(ticker or self._futures_symbol).upper()
@@ -1156,8 +1156,8 @@ class ShioajiBroker:
                     self._event_loop,
                 )
 
-        except Exception as e:
-            logger.error("[Shioaji] Order callback error: {}", e)
+        except Exception:
+            logger.exception("[Shioaji] Order callback error")
 
     # ------------------------------------------------------------------
     # Order placement

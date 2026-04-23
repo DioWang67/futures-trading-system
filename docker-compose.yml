@@ -13,6 +13,9 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./reports:/app/reports
+      - ./.tmp:/app/.tmp
+    mem_limit: 1g
+    cpus: 1.0
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 30s

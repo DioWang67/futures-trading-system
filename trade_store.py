@@ -130,6 +130,24 @@ class TradeStore:
                     filled_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS signal_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    idempotency_key TEXT NOT NULL,
+                    source_path TEXT NOT NULL DEFAULT '',
+                    source_ip TEXT NOT NULL DEFAULT '',
+                    action TEXT NOT NULL,
+                    sentiment TEXT NOT NULL DEFAULT '',
+                    quantity INTEGER NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '',
+                    broker TEXT NOT NULL DEFAULT '',
+                    result_status TEXT NOT NULL DEFAULT '',
+                    result_reason TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT
+                );
+
                 -- Idempotency gate: route_order reserves a key here BEFORE
                 -- any broker submit so a webhook retry arriving while the
                 -- first request is still mid-flight (e.g. waiting for the
@@ -153,6 +171,10 @@ class TradeStore:
                     ON position_snapshots(broker, snapshot_at);
                 CREATE INDEX IF NOT EXISTS idx_idempotency_reservations_created_at
                     ON idempotency_reservations(created_at);
+                CREATE INDEX IF NOT EXISTS idx_signal_events_created_at
+                    ON signal_events(created_at);
+                CREATE INDEX IF NOT EXISTS idx_signal_events_idem
+                    ON signal_events(idempotency_key);
             """)
             # Migrate older DBs that pre-date the filled_qty column.
             cur.execute("PRAGMA table_info(orders)")
@@ -610,6 +632,69 @@ class TradeStore:
                 (event_type, broker, details, now),
             )
 
+    def record_signal_event(
+        self,
+        idempotency_key: str,
+        source_path: str,
+        source_ip: str,
+        action: str,
+        sentiment: str,
+        quantity: int,
+        ticker: str,
+        payload_json: str = "",
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO signal_events
+                   (idempotency_key, source_path, source_ip, action, sentiment,
+                    quantity, ticker, payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    idempotency_key,
+                    source_path,
+                    source_ip,
+                    action,
+                    sentiment,
+                    quantity,
+                    ticker,
+                    payload_json,
+                    now,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def update_signal_event_result(
+        self,
+        idempotency_key: str,
+        broker: str,
+        status: str,
+        reason: str = "",
+        result_json: str = "",
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """UPDATE signal_events
+                   SET broker = ?, result_status = ?, result_reason = ?,
+                       result_json = ?, updated_at = ?
+                   WHERE id = (
+                       SELECT id FROM signal_events
+                       WHERE idempotency_key = ?
+                       ORDER BY id DESC
+                       LIMIT 1
+                   )""",
+                (
+                    broker,
+                    status,
+                    reason,
+                    result_json,
+                    now,
+                    idempotency_key,
+                ),
+            )
+
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
@@ -670,6 +755,15 @@ class TradeStore:
             )
             return [dict(row) for row in cur.fetchall()]
 
+    def get_recent_signal_events(self, limit: int = 50) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT * FROM signal_events
+                   ORDER BY id DESC LIMIT ?""",
+                (limit,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
     def get_daily_summary(self) -> dict:
         """Get today's trading summary."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -687,9 +781,85 @@ class TradeStore:
                 (today,),
             )
             rows = [dict(row) for row in cur.fetchall()]
+            for row in rows:
+                wins = int(row.get("wins") or 0)
+                losses = int(row.get("losses") or 0)
+                decisions = wins + losses
+                row["win_rate"] = (wins / decisions) if decisions > 0 else 0.0
             return {
                 "date": today,
                 "brokers": rows,
                 "total_pnl": sum(r["total_pnl"] or 0 for r in rows),
                 "total_trades": sum(r["trade_count"] for r in rows),
             }
+
+    def get_period_summary(self, days: int = 7) -> dict:
+        days = max(1, int(days))
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT broker,
+                          COUNT(*) as trade_count,
+                          SUM(pnl) as total_pnl,
+                          SUM(commission) as total_commission,
+                          SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                          SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+                          AVG(CASE WHEN pnl > 0 THEN pnl ELSE NULL END) as avg_win_pnl,
+                          AVG(CASE WHEN pnl < 0 THEN pnl ELSE NULL END) as avg_loss_pnl
+                   FROM fills
+                   WHERE filled_at >= ?
+                   GROUP BY broker""",
+                (cutoff,),
+            )
+            rows = [dict(row) for row in cur.fetchall()]
+            for row in rows:
+                wins = int(row.get("wins") or 0)
+                losses = int(row.get("losses") or 0)
+                decisions = wins + losses
+                row["win_rate"] = (wins / decisions) if decisions > 0 else 0.0
+            return {
+                "days": days,
+                "from": cutoff,
+                "brokers": rows,
+                "total_pnl": sum((r.get("total_pnl") or 0.0) for r in rows),
+                "total_trades": sum(int(r.get("trade_count") or 0) for r in rows),
+            }
+
+    def get_signal_fill_reconciliation(self, hours: int = 24) -> dict:
+        hours = max(1, int(hours))
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT
+                       COUNT(*) as signal_count,
+                       SUM(CASE WHEN result_status IN ('ok', 'submitted', 'accepted', 'filled') THEN 1 ELSE 0 END) as accepted_signals,
+                       SUM(CASE WHEN result_status IN ('error', 'rejected', 'risk_rejected') THEN 1 ELSE 0 END) as rejected_signals,
+                       SUM(CASE WHEN result_status = '' THEN 1 ELSE 0 END) as pending_signals
+                   FROM signal_events
+                   WHERE created_at >= ?""",
+                (cutoff,),
+            )
+            signal_row = dict(cur.fetchone() or {})
+            cur.execute(
+                """SELECT COUNT(*) as fill_count
+                   FROM fills
+                   WHERE filled_at >= ?""",
+                (cutoff,),
+            )
+            fill_row = dict(cur.fetchone() or {})
+        signal_count = int(signal_row.get("signal_count") or 0)
+        fill_count = int(fill_row.get("fill_count") or 0)
+        return {
+            "hours": hours,
+            "from": cutoff,
+            "signal_count": signal_count,
+            "fill_count": fill_count,
+            "accepted_signals": int(signal_row.get("accepted_signals") or 0),
+            "rejected_signals": int(signal_row.get("rejected_signals") or 0),
+            "pending_signals": int(signal_row.get("pending_signals") or 0),
+            "signal_fill_gap": signal_count - fill_count,
+        }

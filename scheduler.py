@@ -16,6 +16,7 @@ from loguru import logger
 REFRESH_INTERVAL = 23 * 60 * 60  # 23 hours
 MAX_RETRIES = 5
 INITIAL_RETRY_DELAY = 60  # 1 minute
+RETRY_DELAY_CAP = 15 * 60  # 15 minutes
 
 HEALTH_CHECK_INTERVAL = 30  # seconds
 
@@ -38,29 +39,32 @@ async def shioaji_token_refresh_loop(
         logger.info("[Scheduler] Starting Shioaji token refresh...")
 
         delay = INITIAL_RETRY_DELAY
-        for attempt in range(1, MAX_RETRIES + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 await asyncio.to_thread(shioaji_broker.reconnect)
                 logger.info("[Scheduler] Shioaji token refresh completed")
                 break
             except Exception as e:
                 logger.error(
-                    "[Scheduler] Shioaji token refresh failed (attempt {}/{}): {}",
-                    attempt, MAX_RETRIES, e,
+                    "[Scheduler] Shioaji token refresh failed (attempt {}): {}",
+                    attempt, e,
                 )
+                if notifier:
+                    await notifier.send_error(
+                        f"Shioaji token refresh failed (attempt {attempt}): {e}"
+                    )
+
                 if attempt == MAX_RETRIES:
                     logger.critical(
-                        "[Scheduler] Shioaji token refresh exhausted all {} retries",
-                        MAX_RETRIES,
+                        "[Scheduler] Shioaji token refresh exhausted {} retries; "
+                        "switching to persistent low-frequency retries every {}s",
+                        MAX_RETRIES, RETRY_DELAY_CAP,
                     )
-                    if notifier:
-                        await notifier.send_error(
-                            "Shioaji token refresh failed after all retries!"
-                        )
-                    break
                 logger.info("[Scheduler] Retrying in {}s...", delay)
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, 900)  # cap at 15 minutes
+                delay = min(delay * 2, RETRY_DELAY_CAP)
 
 
 async def broker_health_monitor(

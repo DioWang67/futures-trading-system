@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -172,6 +173,24 @@ async def handle_webhook(
     # Get broker instances from app state
     shioaji_broker = request.app.state.shioaji_broker
     rithmic_broker = request.app.state.rithmic_broker
+    trade_store = getattr(request.app.state, "trade_store", None)
+    source_ip = ""
+    if request.client and request.client.host:
+        source_ip = request.client.host
+    if trade_store:
+        try:
+            trade_store.record_signal_event(
+                idempotency_key=idempotency_key,
+                source_path=str(request.url.path),
+                source_ip=source_ip,
+                action=payload.action,
+                sentiment=payload.sentiment,
+                quantity=payload.quantity,
+                ticker=payload.ticker,
+                payload_json=body.decode("utf-8", errors="replace"),
+            )
+        except Exception as exc:
+            logger.warning("Signal event recording failed: {}", exc)
 
     # Check risk manager halt — but let exit signals through so operators
     # can still flatten positions while the system is halted.
@@ -195,8 +214,24 @@ async def handle_webhook(
     )
     if selected_broker is shioaji_broker:
         shioaji_result = await _safe_execute(shioaji_broker, payload, idempotency_key)
+        if trade_store:
+            trade_store.update_signal_event_result(
+                idempotency_key=idempotency_key,
+                broker="shioaji",
+                status=str(shioaji_result.get("status") or ""),
+                reason=str(shioaji_result.get("reason") or ""),
+                result_json=json.dumps(shioaji_result, ensure_ascii=False),
+            )
     elif selected_broker is rithmic_broker:
         rithmic_result = await _safe_execute(rithmic_broker, payload, idempotency_key)
+        if trade_store:
+            trade_store.update_signal_event_result(
+                idempotency_key=idempotency_key,
+                broker="rithmic",
+                status=str(rithmic_result.get("status") or ""),
+                reason=str(rithmic_result.get("reason") or ""),
+                result_json=json.dumps(rithmic_result, ensure_ascii=False),
+            )
 
     logger.info(
         "Webhook processed: shioaji={}, rithmic={}",

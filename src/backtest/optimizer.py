@@ -108,9 +108,6 @@ class StrategyOptimizer:
                 self.best_params = params
                 self._best_score = score
 
-            # 達標後停止
-            trial.study.stop()
-
         return score
 
     def optimize(self) -> Optional[dict]:

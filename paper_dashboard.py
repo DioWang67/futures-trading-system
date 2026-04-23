@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hmac
 import json
+import secrets
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config import settings
 from trade_store import TradeStore
@@ -48,8 +49,34 @@ def _require_admin_secret(x_admin_secret: str = Header(default="")) -> None:
             status_code=500,
             detail="Admin secret not configured on server",
         )
-    if not x_admin_secret or not hmac.compare_digest(x_admin_secret, expected):
+    if x_admin_secret and hmac.compare_digest(x_admin_secret, expected):
+        return
+
+    raise HTTPException(status_code=403, detail="Invalid admin secret")
+
+
+def _require_dashboard_auth(
+    request: Request,
+    x_admin_secret: str = Header(default=""),
+    x_csrf_token: str = Header(default="", alias="X-CSRF-Token"),
+) -> None:
+    expected = settings.admin.secret.get_secret_value()
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin secret not configured on server",
+        )
+
+    if x_admin_secret and hmac.compare_digest(x_admin_secret, expected):
+        return
+
+    cookie_secret = request.cookies.get("paper_dashboard_admin_secret") or ""
+    if not cookie_secret or not hmac.compare_digest(cookie_secret, expected):
         raise HTTPException(status_code=403, detail="Invalid admin secret")
+
+    csrf_cookie = request.cookies.get("paper_dashboard_csrf") or ""
+    if not csrf_cookie or not x_csrf_token or not hmac.compare_digest(csrf_cookie, x_csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
 def _load_runner_state(path: Path | None = None) -> dict[str, Any]:
@@ -99,7 +126,9 @@ def _safe_trade_store_payload(db_path: Path) -> dict[str, Any]:
         return {
             "position": position,
             "summary": store.get_daily_summary(),
+            "summary_7d": store.get_period_summary(days=7),
             "recent_fills": store.get_recent_fills(20),
+            "recent_signals": store.get_recent_signal_events(30),
             "recent_protective_events": store.get_recent_protective_events(20),
             "recent_risk_events": store.get_recent_risk_events(10),
             "storage_error": None,
@@ -113,7 +142,9 @@ def _safe_trade_store_payload(db_path: Path) -> dict[str, Any]:
                 "snapshot_at": "",
             },
             "summary": {"date": "", "brokers": [], "total_pnl": 0, "total_trades": 0},
+            "summary_7d": {"days": 7, "from": "", "brokers": [], "total_pnl": 0, "total_trades": 0},
             "recent_fills": [],
+            "recent_signals": [],
             "recent_protective_events": [],
             "recent_risk_events": [],
             "storage_error": str(exc),
@@ -173,7 +204,9 @@ def _build_dashboard_payload() -> dict[str, Any]:
         },
         "position": storage["position"],
         "summary": storage["summary"],
+        "summary_7d": storage["summary_7d"],
         "recent_fills": storage["recent_fills"],
+        "recent_signals": storage["recent_signals"],
         "recent_protective_events": storage["recent_protective_events"],
         "recent_risk_events": storage["recent_risk_events"],
         "storage_error": storage["storage_error"],
@@ -181,13 +214,70 @@ def _build_dashboard_payload() -> dict[str, Any]:
 
 
 @app.get("/api/dashboard")
-async def api_dashboard(_: None = Depends(_require_admin_secret)) -> dict[str, Any]:
+async def api_dashboard(_: None = Depends(_require_dashboard_auth)) -> dict[str, Any]:
     return _build_dashboard_payload()
 
 
+@app.get("/api/analytics/summary")
+async def api_analytics_summary(
+    _: None = Depends(_require_dashboard_auth),
+    days: int = Query(default=7, ge=1, le=365),
+    reconcile_hours: int = Query(default=24, ge=1, le=168),
+) -> dict[str, Any]:
+    store = _get_trade_store(DEFAULT_DB_PATH)
+    return {
+        "generated_at": _utc_now().isoformat(),
+        "summary": store.get_period_summary(days=days),
+        "daily": store.get_daily_summary(),
+        "reconciliation": store.get_signal_fill_reconciliation(hours=reconcile_hours),
+    }
+
+
+@app.get("/api/analytics/signals")
+async def api_analytics_signals(
+    _: None = Depends(_require_dashboard_auth),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
+    store = _get_trade_store(DEFAULT_DB_PATH)
+    return {
+        "generated_at": _utc_now().isoformat(),
+        "signals": store.get_recent_signal_events(limit=limit),
+        "fills": store.get_recent_fills(limit=min(limit, 500)),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
-async def dashboard() -> str:
-    return """<!doctype html>
+async def dashboard(request: Request) -> HTMLResponse:
+    admin_secret = (request.query_params.get("admin_secret") or "").strip()
+    expected = settings.admin.secret.get_secret_value()
+
+    if admin_secret:
+        if not expected or not hmac.compare_digest(admin_secret, expected):
+            raise HTTPException(status_code=403, detail="Invalid admin secret")
+
+        csrf_token = secrets.token_urlsafe(24)
+        redirect = RedirectResponse(url=request.url.path, status_code=303)
+        redirect.set_cookie(
+            "paper_dashboard_admin_secret",
+            admin_secret,
+            httponly=True,
+            samesite="strict",
+            max_age=8 * 60 * 60,
+        )
+        redirect.set_cookie(
+            "paper_dashboard_csrf",
+            csrf_token,
+            httponly=False,
+            samesite="strict",
+            max_age=8 * 60 * 60,
+        )
+        return redirect
+
+    csrf_token = request.cookies.get("paper_dashboard_csrf") or ""
+    if (request.cookies.get("paper_dashboard_admin_secret") or "") and not csrf_token:
+        csrf_token = secrets.token_urlsafe(24)
+
+    html = """<!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
@@ -380,16 +470,7 @@ async def dashboard() -> str:
   </div>
 
   <script>
-    const url = new URL(window.location.href);
-    const adminSecret = url.searchParams.get("admin_secret") || sessionStorage.getItem("paperDashboardAdminSecret") || "";
-    if (adminSecret) {
-      sessionStorage.setItem("paperDashboardAdminSecret", adminSecret);
-    }
-    if (url.searchParams.has("admin_secret")) {
-      url.searchParams.delete("admin_secret");
-      const scrubbed = `${url.pathname}${url.search}${url.hash}`;
-      window.history.replaceState({}, "", scrubbed || "/");
-    }
+    const csrfToken = "__CSRF_TOKEN__";
     function fmtMoney(value, digits = 0) {
       if (value == null || value === "") return "-";
       return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
@@ -414,8 +495,81 @@ async def dashboard() -> str:
       el.className = `pill ${pillClass(value)}`;
       el.textContent = String(value ?? "-");
     }
+    function clearChildren(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+    function setNotice(message) {
+      const holder = document.getElementById("storageNotice");
+      clearChildren(holder);
+      if (!message) return;
+      const notice = document.createElement("div");
+      notice.className = "notice";
+      notice.textContent = message;
+      holder.appendChild(notice);
+    }
+    function renderBrokerSummary(rows) {
+      const el = document.getElementById("brokerSummary");
+      clearChildren(el);
+      if (!rows.length) {
+        el.textContent = "-";
+        return;
+      }
+      rows.forEach((row, idx) => {
+        const line = document.createElement("div");
+        line.textContent = `${row.broker}: ${row.trade_count} 筆, PnL ${fmtMoney(row.total_pnl || 0)}`;
+        el.appendChild(line);
+        if (idx < rows.length - 1) {
+          el.appendChild(document.createElement("br"));
+        }
+      });
+    }
+    function renderManagedTrade(managed) {
+      const managedEl = document.getElementById("managedTradeDetails");
+      clearChildren(managedEl);
+      const pairs = managed ? [
+        ["Status", managed.status],
+        ["Side", managed.side],
+        ["Qty", managed.quantity],
+        ["SL / TP", `${managed.sl} / ${managed.tp}`],
+        ["Entry Bar", managed.entry_bar_time],
+        ["Submitted", fmtTs(managed.submitted_at)],
+        ["Exit Reason", managed.exit_reason || "-"],
+      ] : [["Status", "none"]];
+      pairs.forEach(([label, value]) => {
+        const left = document.createElement("div");
+        left.textContent = String(label);
+        const right = document.createElement("div");
+        right.textContent = value == null ? "-" : String(value);
+        if (label === "Entry Bar") right.className = "mono";
+        managedEl.appendChild(left);
+        managedEl.appendChild(right);
+      });
+    }
+    function renderTable(tbodyId, rows, emptyCols) {
+      const tbody = document.getElementById(tbodyId);
+      clearChildren(tbody);
+      if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = emptyCols;
+        td.textContent = "no data";
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      rows.forEach((cells) => {
+        const tr = document.createElement("tr");
+        cells.forEach((cell) => {
+          const td = document.createElement("td");
+          td.textContent = cell.text;
+          if (cell.className) td.className = cell.className;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+    }
     async function refresh() {
-      const headers = adminSecret ? { "X-Admin-Secret": adminSecret } : {};
+      const headers = csrfToken ? { "X-CSRF-Token": csrfToken } : {};
       const res = await fetch("/api/dashboard", { cache: "no-store", headers });
       if (!res.ok) {
         throw new Error(`dashboard fetch failed: ${res.status}`);
@@ -466,78 +620,70 @@ async def dashboard() -> str:
       document.getElementById("quotePrice").textContent = quote.last_tick_price ? fmtMoney(quote.last_tick_price, 1) : "-";
       document.getElementById("quoteStale").textContent = quote.is_stale ? `yes (${quote.stale_after_seconds || "-"}s)` : "no";
       document.getElementById("lastResult").textContent = runtime.last_cycle_result ? JSON.stringify(runtime.last_cycle_result) : "-";
-      document.getElementById("brokerSummary").innerHTML = (summary.brokers || []).length
-        ? summary.brokers.map(row => `${row.broker}: ${row.trade_count} 筆, PnL ${fmtMoney(row.total_pnl || 0)}`).join("<br>")
-        : "-";
+      renderBrokerSummary(summary.brokers || []);
+      renderManagedTrade(managed);
+      renderTable(
+        "protectiveTable",
+        (data.recent_protective_events || []).map((event) => ([
+          { text: fmtTs(event.triggered_at) },
+          { text: event.status || "-" },
+          { text: event.trigger_reason || "-" },
+          { text: `${event.side || "-"} x${event.quantity || 0}` },
+          { text: event.trigger_price ? fmtMoney(event.trigger_price, 1) : "-" },
+          { text: event.submit_price ? `${fmtMoney(event.submit_price, 1)} (${event.execution_price_type || "-"})` : "-" },
+          { text: event.fill_price ? fmtMoney(event.fill_price, 1) : "-" },
+          { text: event.slippage_points || event.slippage_points === 0 ? fmtMoney(event.slippage_points, 1) : "-" },
+        ])),
+        8,
+      );
+      renderTable(
+        "fillsTable",
+        (data.recent_fills || []).map((fill) => ([
+          { text: fmtTs(fill.filled_at) },
+          { text: fill.broker || "-" },
+          { text: fill.action || "-" },
+          { text: String(fill.filled_qty ?? "-") },
+          { text: fmtMoney(fill.fill_price, 1) },
+          { text: fmtMoney(fill.pnl || 0) },
+        ])),
+        6,
+      );
+      renderTable(
+        "riskTable",
+        (data.recent_risk_events || []).map((event) => ([
+          { text: fmtTs(event.created_at) },
+          { text: event.event_type || "-" },
+          { text: event.broker || "-" },
+          { text: event.details || "-", className: "mono" },
+        ])),
+        4,
+      );
 
-      const managedEl = document.getElementById("managedTradeDetails");
-      managedEl.innerHTML = managed
-        ? `
-          <div>Status</div><div>${managed.status}</div>
-          <div>Side</div><div>${managed.side}</div>
-          <div>Qty</div><div>${managed.quantity}</div>
-          <div>SL / TP</div><div>${managed.sl} / ${managed.tp}</div>
-          <div>Entry Bar</div><div class="mono">${managed.entry_bar_time}</div>
-          <div>Submitted</div><div>${fmtTs(managed.submitted_at)}</div>
-          <div>Exit Reason</div><div>${managed.exit_reason || "-"}</div>
-        `
-        : "<div>Status</div><div>none</div>";
-
-      document.getElementById("protectiveTable").innerHTML = (data.recent_protective_events || []).length
-        ? data.recent_protective_events.map(event => `
-          <tr>
-            <td>${fmtTs(event.triggered_at)}</td>
-            <td>${event.status || "-"}</td>
-            <td>${event.trigger_reason || "-"}</td>
-            <td>${event.side || "-"} x${event.quantity || 0}</td>
-            <td>${event.trigger_price ? fmtMoney(event.trigger_price, 1) : "-"}</td>
-            <td>${event.submit_price ? `${fmtMoney(event.submit_price, 1)} (${event.execution_price_type || "-"})` : "-"}</td>
-            <td>${event.fill_price ? fmtMoney(event.fill_price, 1) : "-"}</td>
-            <td>${event.slippage_points || event.slippage_points === 0 ? fmtMoney(event.slippage_points, 1) : "-"}</td>
-          </tr>
-        `).join("")
-        : "<tr><td colspan='8'>no data</td></tr>";
-
-      document.getElementById("fillsTable").innerHTML = (data.recent_fills || []).length
-        ? data.recent_fills.map(fill => `
-          <tr>
-            <td>${fmtTs(fill.filled_at)}</td>
-            <td>${fill.broker}</td>
-            <td>${fill.action}</td>
-            <td>${fill.filled_qty}</td>
-            <td>${fmtMoney(fill.fill_price, 1)}</td>
-            <td>${fmtMoney(fill.pnl || 0)}</td>
-          </tr>
-        `).join("")
-        : "<tr><td colspan='6'>no data</td></tr>";
-
-      document.getElementById("riskTable").innerHTML = (data.recent_risk_events || []).length
-        ? data.recent_risk_events.map(event => `
-          <tr>
-            <td>${fmtTs(event.created_at)}</td>
-            <td>${event.event_type || "-"}</td>
-            <td>${event.broker || "-"}</td>
-            <td class="mono">${event.details || "-"}</td>
-          </tr>
-        `).join("")
-        : "<tr><td colspan='4'>no data</td></tr>";
-
-      document.getElementById("storageNotice").innerHTML = data.storage_error
-        ? `<div class="notice">資料讀取異常: ${data.storage_error}</div>`
-        : "";
+      setNotice(data.storage_error ? `資料讀取異常: ${data.storage_error}` : "");
       document.getElementById("refreshedAt").textContent = `最後刷新 ${new Date().toLocaleTimeString("zh-TW")}`;
     }
     refresh().catch(err => {
-      document.getElementById("storageNotice").innerHTML = `<div class="notice">${err.message}</div>`;
+      setNotice(err.message);
     });
     setInterval(() => {
       refresh().catch(err => {
-        document.getElementById("storageNotice").innerHTML = `<div class="notice">${err.message}</div>`;
+        setNotice(err.message);
       });
     }, 5000);
   </script>
 </body>
 </html>"""
+    html = html.replace("__CSRF_TOKEN__", csrf_token)
+    response = HTMLResponse(content=html)
+    if (request.cookies.get("paper_dashboard_admin_secret") or "") and request.cookies.get("paper_dashboard_csrf") != csrf_token:
+        response.set_cookie(
+            "paper_dashboard_csrf",
+            csrf_token,
+            httponly=False,
+            samesite="strict",
+            max_age=8 * 60 * 60,
+        )
+    return response
 
 
 if __name__ == "__main__":
