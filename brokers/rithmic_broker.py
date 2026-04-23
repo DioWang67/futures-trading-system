@@ -82,6 +82,7 @@ class RithmicBroker:
 
             # Restore position from trade store on startup
             self._restore_position()
+            await self._sync_position_from_broker()
 
             self._connected = True
             logger.info("[Rithmic] Connected successfully")
@@ -127,6 +128,90 @@ class RithmicBroker:
             logger.info(
                 "[Rithmic] Restored position from DB: {} x{}",
                 snapshot["side"], snapshot["quantity"],
+            )
+
+    async def _sync_position_from_broker(self) -> None:
+        """Reconcile local position with broker position on connect."""
+        if self.client is None:
+            return
+        fetch_positions = getattr(self.client, "get_positions", None)
+        if fetch_positions is None:
+            logger.warning(
+                "[Rithmic] Client has no get_positions(); cannot reconcile startup position"
+            )
+            return
+
+        try:
+            positions = await fetch_positions(account_id=self.account_id)
+        except TypeError:
+            # Some client versions accept no keyword args.
+            positions = await fetch_positions()
+        except Exception as exc:
+            logger.error("[Rithmic] Failed to fetch broker positions: {}", exc)
+            if self._risk_manager:
+                self._risk_manager.set_close_only(
+                    True, f"rithmic position reconcile failed: {exc}",
+                )
+            return
+
+        broker_side = "flat"
+        broker_qty = 0
+        broker_entry = 0.0
+
+        for raw in positions or []:
+            symbol = str(
+                getattr(raw, "symbol", None)
+                or getattr(raw, "instrument", None)
+                or (raw.get("symbol") if isinstance(raw, dict) else "")
+                or ""
+            ).upper()
+            if "MES" not in symbol:
+                continue
+
+            qty = int(
+                getattr(raw, "quantity", None)
+                or getattr(raw, "qty", None)
+                or (raw.get("quantity") if isinstance(raw, dict) else 0)
+                or 0
+            )
+            if qty <= 0:
+                continue
+
+            side_raw = str(
+                getattr(raw, "side", None)
+                or getattr(raw, "direction", None)
+                or (raw.get("side") if isinstance(raw, dict) else "")
+                or ""
+            ).strip().upper()
+            broker_side = "short" if side_raw.startswith("S") else "long"
+            broker_qty = qty
+            broker_entry = float(
+                getattr(raw, "avg_price", None)
+                or getattr(raw, "price", None)
+                or (raw.get("avg_price") if isinstance(raw, dict) else 0.0)
+                or 0.0
+            )
+            break
+
+        local = self.position.get_position()
+        local_tuple = (local.side, local.quantity)
+        broker_tuple = (broker_side, broker_qty)
+        if local_tuple != broker_tuple:
+            logger.error(
+                "[Rithmic] Startup position mismatch local={}x{} broker={}x{}",
+                local.side, local.quantity, broker_side, broker_qty,
+            )
+            if self._risk_manager:
+                self._risk_manager.set_close_only(
+                    True,
+                    f"rithmic position mismatch local={local.side}x{local.quantity} "
+                    f"broker={broker_side}x{broker_qty}",
+                )
+
+        self.position.update_position(broker_side, broker_qty, broker_entry)
+        if self._trade_store:
+            self._trade_store.save_position_snapshot(
+                "rithmic", broker_side, broker_qty, broker_entry
             )
 
     # ------------------------------------------------------------------

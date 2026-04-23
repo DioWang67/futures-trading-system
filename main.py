@@ -17,6 +17,8 @@ import asyncio
 import hmac
 import re
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -37,6 +39,12 @@ from webhook.router import router
 # Secret masking filter
 # ---------------------------------------------------------------------------
 _SECRET_PATTERNS: list[re.Pattern] = []
+_ADMIN_AUTH_LOCK = threading.Lock()
+_ADMIN_AUTH_FAILURES = 0
+_ADMIN_AUTH_BLOCK_UNTIL = 0.0
+_ADMIN_AUTH_BASE_BACKOFF_SECONDS = 2
+_ADMIN_AUTH_MAX_BACKOFF_SECONDS = 60
+_ADMIN_AUTH_MAX_FAIL_BEFORE_BACKOFF = 3
 
 
 def _build_secret_patterns() -> None:
@@ -77,7 +85,33 @@ def _require_admin_secret(x_admin_secret: str = Header(default="")) -> None:
             status_code=500,
             detail="Admin secret not configured on server",
         )
-    if not x_admin_secret or not hmac.compare_digest(x_admin_secret, expected):
+    global _ADMIN_AUTH_FAILURES, _ADMIN_AUTH_BLOCK_UNTIL
+    now = time.monotonic()
+    with _ADMIN_AUTH_LOCK:
+        if now < _ADMIN_AUTH_BLOCK_UNTIL:
+            wait_seconds = int(max(1, _ADMIN_AUTH_BLOCK_UNTIL - now))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Admin auth temporarily locked. Retry in {wait_seconds}s.",
+            )
+
+        if x_admin_secret and hmac.compare_digest(x_admin_secret, expected):
+            _ADMIN_AUTH_FAILURES = 0
+            _ADMIN_AUTH_BLOCK_UNTIL = 0.0
+            return
+
+        _ADMIN_AUTH_FAILURES += 1
+        if _ADMIN_AUTH_FAILURES >= _ADMIN_AUTH_MAX_FAIL_BEFORE_BACKOFF:
+            exponent = _ADMIN_AUTH_FAILURES - _ADMIN_AUTH_MAX_FAIL_BEFORE_BACKOFF
+            backoff = min(
+                _ADMIN_AUTH_MAX_BACKOFF_SECONDS,
+                _ADMIN_AUTH_BASE_BACKOFF_SECONDS * (2 ** exponent),
+            )
+            _ADMIN_AUTH_BLOCK_UNTIL = now + backoff
+            logger.warning(
+                "Admin auth failed {} times; lock for {}s",
+                _ADMIN_AUTH_FAILURES, backoff,
+            )
         raise HTTPException(status_code=403, detail="Invalid admin secret")
 
 
