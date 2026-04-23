@@ -1,0 +1,59 @@
+{
+  "run_id": "tmf_proxy_txf_3y_optimized_filters_20260423",
+  "instrument": "TMF/Micro Taiwan proxy using TXF prices",
+  "data": {
+    "source_file": "data/TXF_15m_2020_2026_Merged.csv",
+    "bars_ltf": 55665,
+    "bars_htf": 14652,
+    "start": "2023-01-30 12:15:00",
+    "end": "2026-01-30 12:15:00"
+  },
+  "account": {
+    "initial_cash": 100000,
+    "contracts": 2,
+    "point_value": 10
+  },
+  "base_params_source": "txf_final_official_20260419_212331",
+  "optimized_params": {
+    "swing_lookback": 10,
+    "bos_min_move": 35.0,
+    "ob_max_age": 19,
+    "ob_body_ratio": 0.55,
+    "fvg_min_gap": 13.0,
+    "fvg_enabled": true,
+    "pin_bar_ratio": 0.75,
+    "engulf_ratio": 1.4000000000000001,
+    "rr_ratio": 1.25,
+    "use_structure_tp": true,
+    "sl_buffer": 3.0,
+    "pa_confirm": false,
+    "adx_period": 16,
+    "adx_threshold": 32.5,
+    "adx_filter_enabled": false,
+    "atr_filter_enabled": true,
+    "atr_period": 14,
+    "atr_min_points": 20.0,
+    "blocked_entry_hours": [
+      0,
+      1,
+      10,
+      15,
+      17,
+      21
+    ]
+  },
+  "metrics": {
+    "trades": 233,
+    "winning_trades": 143,
+    "losing_trades": 90,
+    "win_rate": 0.6137339055793991,
+    "profit_factor": 1.7298028352615284,
+    "sharpe": 0.2699809548283571,
+    "max_drawdown": 0.08971154495710328,
+    "avg_rr": 1.4391291278196972,
+    "total_pnl": 89576.0,
+    "final_equity": 189576.0,
+    "return_pct": 0.89576
+  },
+  "report": "E:\\python\\trading-bot\\reports\\backtest_20260423_230325.html"
+}

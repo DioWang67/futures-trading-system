@@ -172,6 +172,7 @@ class WalkForwardValidator:
             logger.info(f"測試期：{segment.test_start} ~ {segment.test_end}")
             bt_cfg = self.config.get("backtest", {})
             engine = BacktestEngine(
+                initial_cash=bt_cfg.get("initial_cash", 1_000_000.0),
                 commission=bt_cfg.get("commission", 22.0),
                 slippage=bt_cfg.get("slippage", 1.0),
                 size=bt_cfg.get("size", 1),

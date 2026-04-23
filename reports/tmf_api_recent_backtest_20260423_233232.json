@@ -1,0 +1,53 @@
+{
+  "data": {
+    "symbol": "TMF",
+    "ltf_rows": 839,
+    "htf_rows": 221,
+    "ltf_start": "2026-04-09 00:00:00",
+    "ltf_end": "2026-04-23 23:45:00",
+    "htf_start": "2026-04-09 00:00:00",
+    "htf_end": "2026-04-24 00:00:00"
+  },
+  "backtest": {
+    "initial_cash": 100000,
+    "contracts": 2,
+    "point_value": 10,
+    "total_trades": 6,
+    "win_rate": 0.6666666666666666,
+    "profit_factor": 3.4259634888438133,
+    "sharpe_ratio": 0.7287982473818915,
+    "max_drawdown": 0.03863191922416889,
+    "avg_rr": 0.250949919526204,
+    "total_pnl": 14352.0,
+    "final_equity": 114352.0,
+    "report_path": "E:\\python\\trading-bot\\reports\\backtest_20260423_233242.html"
+  },
+  "params": {
+    "swing_lookback": 10,
+    "bos_min_move": 35.0,
+    "ob_max_age": 19,
+    "ob_body_ratio": 0.55,
+    "fvg_min_gap": 13.0,
+    "fvg_enabled": true,
+    "pin_bar_ratio": 0.75,
+    "engulf_ratio": 1.4,
+    "rr_ratio": 1.25,
+    "use_structure_tp": true,
+    "sl_buffer": 3.0,
+    "pa_confirm": false,
+    "adx_period": 16,
+    "adx_threshold": 32.5,
+    "adx_filter_enabled": false,
+    "atr_filter_enabled": true,
+    "atr_period": 14,
+    "atr_min_points": 20.0,
+    "blocked_entry_hours": [
+      0,
+      1,
+      10,
+      15,
+      17,
+      21
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "run_id": "tmf_proxy_txf_3y_txf_final_official_params_20260423",
+  "instrument": "TMF/Micro Taiwan proxy using TXF prices",
+  "requested": {
+    "initial_cash": 100000,
+    "contracts": 2,
+    "point_value": 10,
+    "years": 3
+  },
+  "data": {
+    "source_file": "data/TXF_15m_2020_2026_Merged.csv",
+    "bars_ltf": 55665,
+    "bars_htf": 14652,
+    "start": "2023-01-30 12:15:00",
+    "end": "2026-01-30 12:15:00"
+  },
+  "params_source": "txf_final_official_20260419_212331",
+  "params": {
+    "swing_lookback": 10,
+    "bos_min_move": 35.0,
+    "ob_max_age": 19,
+    "ob_body_ratio": 0.55,
+    "fvg_min_gap": 13.0,
+    "fvg_enabled": true,
+    "pin_bar_ratio": 0.75,
+    "engulf_ratio": 1.4000000000000001,
+    "rr_ratio": 1.25,
+    "use_structure_tp": true,
+    "sl_buffer": 3.0,
+    "pa_confirm": false,
+    "adx_period": 16,
+    "adx_threshold": 32.5,
+    "adx_filter_enabled": false
+  },
+  "metrics": {
+    "trades": 336,
+    "winning_trades": 193,
+    "losing_trades": 143,
+    "win_rate": 0.5744047619047619,
+    "profit_factor": 1.3168827279339408,
+    "sharpe": 0.17038502700252997,
+    "max_drawdown_engine": 0.150351227685764,
+    "avg_rr": 1.2631582106929895,
+    "total_pnl": 59252.0,
+    "initial_cash": 100000.0,
+    "final_equity": 159252.0,
+    "return_pct": 0.59252,
+    "note": "total_pnl/final_equity use Backtrader cash PnL with size=2 and point_value=10. trade_log.pnl is raw point movement and should not be used as cash PnL without conversion."
+  }
+}

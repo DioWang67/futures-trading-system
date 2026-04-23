@@ -99,6 +99,39 @@ def _compute_adx(
     return adx, plus_di, minus_di
 
 
+def _compute_atr(
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    period: int = 14,
+) -> np.ndarray:
+    """Compute Wilder ATR in points."""
+    n = len(highs)
+    atr = np.full(n, np.nan)
+    if n <= period:
+        return atr
+
+    tr = np.zeros(n)
+    for i in range(1, n):
+        hl = highs[i] - lows[i]
+        hpc = abs(highs[i] - closes[i - 1])
+        lpc = abs(lows[i] - closes[i - 1])
+        tr[i] = max(hl, hpc, lpc)
+
+    atr[period] = np.mean(tr[1:period + 1])
+    for i in range(period + 1, n):
+        atr[i] = ((atr[i - 1] * (period - 1)) + tr[i]) / period
+
+    return atr
+
+
+def _is_entry_hour_allowed(hour: int, blocked_entry_hours: Optional[list[int]] = None) -> bool:
+    """Return True when the entry hour is tradable."""
+    if blocked_entry_hours is None:
+        return True
+    return hour not in set(blocked_entry_hours)
+
+
 def precompute_signals(
     ltf_df: pd.DataFrame,
     htf_df: Optional[pd.DataFrame] = None,
@@ -117,6 +150,10 @@ def precompute_signals(
     adx_period: int = 14,
     adx_threshold: float = 20.0,
     adx_filter_enabled: bool = True,
+    atr_filter_enabled: bool = False,
+    atr_period: int = 14,
+    atr_min_points: float = 0.0,
+    blocked_entry_hours: Optional[list[int]] = None,
 ) -> pd.DataFrame:
     """預計算所有訊號，回傳帶有 signal 欄位的 LTF DataFrame。
 
@@ -132,9 +169,12 @@ def precompute_signals(
     lows = ltf["low"].values.astype(float)
     closes = ltf["close"].values.astype(float)
     n = len(ltf)
+    ltf_dts = pd.to_datetime(ltf["datetime"]) if "datetime" in ltf.columns else pd.Series(ltf.index)
+    entry_hours = ltf_dts.dt.hour.to_numpy(dtype=int)
 
     # ---- ADX 趨勢強度過濾 ----
     adx_arr, plus_di_arr, minus_di_arr = _compute_adx(highs, lows, closes, adx_period)
+    atr_arr = _compute_atr(highs, lows, closes, atr_period)
 
     # ---- HTF 趨勢 ----
     htf_trend_arr = np.zeros(n, dtype=int)
@@ -149,7 +189,7 @@ def precompute_signals(
         htf_breaks = detect_structure_breaks(htf_swings, h_highs, h_lows, h_closes, bos_min_move)
 
         # 將 HTF 趨勢映射到 LTF 時間軸
-        ltf_dts = pd.to_datetime(ltf["datetime"]).values if "datetime" in ltf.columns else ltf.index.values
+        ltf_dt_values = ltf_dts.values
         current_trend = 0
         htf_break_idx = 0
 
@@ -159,7 +199,7 @@ def precompute_signals(
                 brk = htf_breaks[htf_break_idx]
                 if brk.index < len(h_dts):
                     brk_time = h_dts[brk.index]
-                    if brk_time <= ltf_dts[i]:
+                    if brk_time <= ltf_dt_values[i]:
                         current_trend = 1 if brk.direction == Trend.BULLISH else -1
                         htf_break_idx += 1
                     else:
@@ -264,6 +304,10 @@ def precompute_signals(
 
         # ADX 過濾：震盪市不進場
         if adx_filter_enabled and (np.isnan(adx_arr[i]) or adx_arr[i] < adx_threshold):
+            continue
+        if atr_filter_enabled and (np.isnan(atr_arr[i]) or atr_arr[i] < atr_min_points):
+            continue
+        if not _is_entry_hour_allowed(int(entry_hours[i]), blocked_entry_hours):
             continue
 
         trend = Trend.BULLISH if htf_trend_arr[i] == 1 else Trend.BEARISH
@@ -393,6 +437,9 @@ class SMCPAStrategy(bt.Strategy):
         use_structure_tp=True,
         sl_buffer=2.0,
         pa_confirm=True,
+        atr_filter_enabled=False,
+        atr_period=14,
+        atr_min_points=0.0,
     )
 
     def __init__(self):

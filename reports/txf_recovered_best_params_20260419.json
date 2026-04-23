@@ -1,0 +1,69 @@
+{
+  "records": [
+    {
+      "id": "txf_final_official_20260419_212331",
+      "status": "recovered_and_verified",
+      "instrument": "TXF",
+      "data_file": "data/TXF_15m_2020_2026_Merged.csv",
+      "source_report": "reports/backtest_20260419_212331.html",
+      "source_log": "C:/Users/\u5b8f/AppData/Local/Temp/claude/e--python-trading-bot/01959f37-a445-4aef-9e73-cf2c1d692474/tasks/bs5u4vrlv.output",
+      "source_log_line": 17,
+      "source_label": "txf_final_official",
+      "original_metrics": {
+        "trades": 672,
+        "win_rate": 0.6101,
+        "profit_factor": 1.75,
+        "sharpe": 0.22,
+        "max_drawdown": 0.0672,
+        "avg_rr": 1.42,
+        "total_pnl": 2159560
+      },
+      "verification_run_20260423": {
+        "point_value": 200,
+        "trades": 672,
+        "win_rate": 0.6101,
+        "profit_factor": 1.77,
+        "sharpe": 0.22,
+        "max_drawdown": 0.066,
+        "avg_rr": 1.42,
+        "total_pnl": 2210632,
+        "note": "Small differences are from current code/report extraction; trade count and core ratios match the source report."
+      },
+      "params": {
+        "swing_lookback": 10,
+        "bos_min_move": 35.0,
+        "ob_max_age": 19,
+        "ob_body_ratio": 0.55,
+        "fvg_min_gap": 13.0,
+        "fvg_enabled": true,
+        "pin_bar_ratio": 0.75,
+        "engulf_ratio": 1.4000000000000001,
+        "rr_ratio": 1.25,
+        "use_structure_tp": true,
+        "sl_buffer": 3.0,
+        "pa_confirm": false,
+        "adx_period": 16,
+        "adx_threshold": 32.5,
+        "adx_filter_enabled": false
+      }
+    },
+    {
+      "id": "txf_optuna_20260419_174029",
+      "status": "report_found_params_not_found",
+      "instrument": "TXF",
+      "data_file": "data/TXF_15m_2020_2026_Merged.csv",
+      "source_report": "reports/backtest_20260419_174029.html",
+      "companion_report": "reports/montecarlo_20260419_174030.html",
+      "original_metrics": {
+        "trades": 858,
+        "win_rate": 0.5921,
+        "profit_factor": 2.33,
+        "sharpe": 0.16,
+        "max_drawdown": 0.1299,
+        "avg_rr": 2.13,
+        "total_pnl": 5189840
+      },
+      "search_result": "No matching params block or log line was found for this exact report after searching reports, workspace logs, .tmp, and Claude temp task outputs."
+    }
+  ]
+}

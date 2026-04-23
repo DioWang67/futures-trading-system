@@ -69,6 +69,7 @@ def fetch_kbars_shioaji(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     simulation: bool = True,
+    request_timeout_ms: int = 90_000,
 ) -> pd.DataFrame:
     """透過 Shioaji API 拉取歷史 K 棒資料。
 
@@ -128,6 +129,7 @@ def fetch_kbars_shioaji(
                 contract=contract,
                 start=current_start.strftime("%Y-%m-%d"),
                 end=batch_end.strftime("%Y-%m-%d"),
+                timeout=request_timeout_ms,
             )
 
             df_batch = pd.DataFrame({**kbars})
@@ -168,7 +170,10 @@ def fetch_kbars_shioaji(
         return df.reset_index()
 
     finally:
-        api.logout()
+        try:
+            api.logout()
+        except TimeoutError as exc:
+            logger.warning(f"Shioaji logout timed out: {exc}")
 
 
 def fetch_and_cache(
@@ -194,6 +199,7 @@ def fetch_and_cache(
         symbol=symbol,
         freq=freq,
         simulation=shioaji_cfg.get("simulation", True),
+        request_timeout_ms=int(shioaji_cfg.get("historical_timeout_ms", 90_000)),
     )
 
     if not df.empty:

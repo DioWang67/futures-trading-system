@@ -1,0 +1,161 @@
+{
+  "data": {
+    "ltf_rows": 31918,
+    "htf_rows": 8399,
+    "ltf_start": "2024-07-29 09:00:00",
+    "ltf_end": "2026-04-23 23:45:00"
+  },
+  "walk_forward": {
+    "mode": "constrained",
+    "n_splits": 3,
+    "train_ratio": 0.7,
+    "optimization_trials": 60,
+    "enabled_params": [
+      "bos_min_move",
+      "fvg_min_gap",
+      "rr_ratio",
+      "sl_buffer",
+      "atr_min_points"
+    ],
+    "all_passed": false,
+    "pass_rate": 0.3333333333333333,
+    "report_path": "E:\\python\\trading-bot\\reports\\walkforward_20260424_002755.html"
+  },
+  "segments": [
+    {
+      "segment_id": 1,
+      "train_start": "2024-07-29 09:00:00",
+      "train_end": "2024-12-19 00:15:00",
+      "test_start": "2024-12-19 00:30:00",
+      "test_end": "2025-02-27 17:45:00",
+      "passed": true,
+      "best_params": {
+        "swing_lookback": 10,
+        "bos_min_move": 45.0,
+        "ob_max_age": 19,
+        "ob_body_ratio": 0.55,
+        "fvg_min_gap": 7.0,
+        "fvg_enabled": true,
+        "pin_bar_ratio": 0.75,
+        "engulf_ratio": 1.4,
+        "rr_ratio": 2.25,
+        "use_structure_tp": true,
+        "sl_buffer": 1.0,
+        "pa_confirm": false,
+        "adx_period": 16,
+        "adx_threshold": 32.5,
+        "adx_filter_enabled": false,
+        "atr_filter_enabled": true,
+        "atr_period": 14,
+        "atr_min_points": 5.0,
+        "blocked_entry_hours": [
+          0,
+          1,
+          10,
+          15,
+          17,
+          21
+        ]
+      },
+      "test_result": {
+        "total_trades": 11,
+        "win_rate": 0.45454545454545453,
+        "profit_factor": 1.4729950900163666,
+        "sharpe_ratio": 0.2697660046204907,
+        "max_drawdown": 0.024511175976648408,
+        "avg_rr": 2.283265819864566,
+        "total_pnl": 2312.0
+      }
+    },
+    {
+      "segment_id": 2,
+      "train_start": "2025-02-27 18:00:00",
+      "train_end": "2025-07-22 11:30:00",
+      "test_start": "2025-07-22 11:45:00",
+      "test_end": "2025-09-18 10:30:00",
+      "passed": false,
+      "best_params": {
+        "swing_lookback": 10,
+        "bos_min_move": 40.0,
+        "ob_max_age": 19,
+        "ob_body_ratio": 0.55,
+        "fvg_min_gap": 12.0,
+        "fvg_enabled": true,
+        "pin_bar_ratio": 0.75,
+        "engulf_ratio": 1.4,
+        "rr_ratio": 1.5,
+        "use_structure_tp": true,
+        "sl_buffer": 2.0,
+        "pa_confirm": false,
+        "adx_period": 16,
+        "adx_threshold": 32.5,
+        "adx_filter_enabled": false,
+        "atr_filter_enabled": true,
+        "atr_period": 14,
+        "atr_min_points": 40.0,
+        "blocked_entry_hours": [
+          0,
+          1,
+          10,
+          15,
+          17,
+          21
+        ]
+      },
+      "test_result": {
+        "total_trades": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "sharpe_ratio": 0.0,
+        "max_drawdown": 0.0,
+        "avg_rr": 0.0,
+        "total_pnl": 0.0
+      }
+    },
+    {
+      "segment_id": 3,
+      "train_start": "2025-09-18 10:45:00",
+      "train_end": "2026-02-11 02:15:00",
+      "test_start": "2026-02-11 02:30:00",
+      "test_end": "2026-04-23 23:30:00",
+      "passed": false,
+      "best_params": {
+        "swing_lookback": 10,
+        "bos_min_move": 50.0,
+        "ob_max_age": 19,
+        "ob_body_ratio": 0.55,
+        "fvg_min_gap": 13.0,
+        "fvg_enabled": true,
+        "pin_bar_ratio": 0.75,
+        "engulf_ratio": 1.4,
+        "rr_ratio": 1.75,
+        "use_structure_tp": true,
+        "sl_buffer": 3.5,
+        "pa_confirm": false,
+        "adx_period": 16,
+        "adx_threshold": 32.5,
+        "adx_filter_enabled": false,
+        "atr_filter_enabled": true,
+        "atr_period": 14,
+        "atr_min_points": 30.0,
+        "blocked_entry_hours": [
+          0,
+          1,
+          10,
+          15,
+          17,
+          21
+        ]
+      },
+      "test_result": {
+        "total_trades": 35,
+        "win_rate": 0.6285714285714286,
+        "profit_factor": 3.002815459431789,
+        "sharpe_ratio": 0.4583468817370492,
+        "max_drawdown": 0.19086529884032113,
+        "avg_rr": 3.7927963246249705,
+        "total_pnl": 93900.0
+      }
+    }
+  ]
+}

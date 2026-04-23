@@ -1,0 +1,129 @@
+{
+  "data": {
+    "ltf_rows": 31918,
+    "htf_rows": 8399,
+    "ltf_start": "2024-07-29 09:00:00",
+    "ltf_end": "2026-04-23 23:45:00"
+  },
+  "walk_forward": {
+    "n_splits": 3,
+    "train_ratio": 0.7,
+    "optimization_trials": 60,
+    "all_passed": false,
+    "pass_rate": 0.3333333333333333,
+    "report_path": "E:\\python\\trading-bot\\reports\\walkforward_20260424_001536.html"
+  },
+  "segments": [
+    {
+      "segment_id": 1,
+      "train_start": "2024-07-29 09:00:00",
+      "train_end": "2024-12-19 00:15:00",
+      "test_start": "2024-12-19 00:30:00",
+      "test_end": "2025-02-27 17:45:00",
+      "passed": true,
+      "best_params": {
+        "swing_lookback": 9,
+        "bos_min_move": 45.0,
+        "ob_max_age": 26,
+        "ob_body_ratio": 0.7,
+        "fvg_min_gap": 13.0,
+        "fvg_enabled": false,
+        "pin_bar_ratio": 0.6000000000000001,
+        "engulf_ratio": 1.4000000000000001,
+        "rr_ratio": 1.5,
+        "use_structure_tp": false,
+        "sl_buffer": 1.5,
+        "pa_confirm": false,
+        "adx_period": 28,
+        "adx_threshold": 25.0,
+        "adx_filter_enabled": true,
+        "atr_filter_enabled": false,
+        "atr_period": 22,
+        "atr_min_points": 15.0
+      },
+      "test_result": {
+        "total_trades": 3,
+        "win_rate": 0.6666666666666666,
+        "profit_factor": 4.024590163934426,
+        "sharpe_ratio": 0.7336324423780304,
+        "max_drawdown": 0.010249661003429849,
+        "avg_rr": 1.0784608887895273,
+        "total_pnl": 1476.0
+      }
+    },
+    {
+      "segment_id": 2,
+      "train_start": "2025-02-27 18:00:00",
+      "train_end": "2025-07-22 11:30:00",
+      "test_start": "2025-07-22 11:45:00",
+      "test_end": "2025-09-18 10:30:00",
+      "passed": false,
+      "best_params": {
+        "swing_lookback": 9,
+        "bos_min_move": 50.0,
+        "ob_max_age": 15,
+        "ob_body_ratio": 0.6000000000000001,
+        "fvg_min_gap": 7.0,
+        "fvg_enabled": false,
+        "pin_bar_ratio": 0.7000000000000001,
+        "engulf_ratio": 1.2000000000000002,
+        "rr_ratio": 1.25,
+        "use_structure_tp": true,
+        "sl_buffer": 2.0,
+        "pa_confirm": false,
+        "adx_period": 18,
+        "adx_threshold": 30.0,
+        "adx_filter_enabled": false,
+        "atr_filter_enabled": true,
+        "atr_period": 16,
+        "atr_min_points": 40.0
+      },
+      "test_result": {
+        "total_trades": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "sharpe_ratio": 0.0,
+        "max_drawdown": 0.0,
+        "avg_rr": 0.0,
+        "total_pnl": 0.0
+      }
+    },
+    {
+      "segment_id": 3,
+      "train_start": "2025-09-18 10:45:00",
+      "train_end": "2026-02-11 02:15:00",
+      "test_start": "2026-02-11 02:30:00",
+      "test_end": "2026-04-23 23:30:00",
+      "passed": false,
+      "best_params": {
+        "swing_lookback": 9,
+        "bos_min_move": 50.0,
+        "ob_max_age": 22,
+        "ob_body_ratio": 0.65,
+        "fvg_min_gap": 7.0,
+        "fvg_enabled": false,
+        "pin_bar_ratio": 0.75,
+        "engulf_ratio": 1.2000000000000002,
+        "rr_ratio": 2.5,
+        "use_structure_tp": true,
+        "sl_buffer": 1.5,
+        "pa_confirm": true,
+        "adx_period": 18,
+        "adx_threshold": 35.0,
+        "adx_filter_enabled": false,
+        "atr_filter_enabled": true,
+        "atr_period": 18,
+        "atr_min_points": 25.0
+      },
+      "test_result": {
+        "total_trades": 10,
+        "win_rate": 0.4,
+        "profit_factor": 0.40876956741289344,
+        "sharpe_ratio": -0.12906842356611967,
+        "max_drawdown": 0.3736279053559606,
+        "avg_rr": 0.6868305560839545,
+        "total_pnl": -28100.0
+      }
+    }
+  ]
+}

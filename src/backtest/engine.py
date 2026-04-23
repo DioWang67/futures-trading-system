@@ -115,6 +115,10 @@ class BacktestEngine:
             adx_period=params.get("adx_period", 14),
             adx_threshold=params.get("adx_threshold", 20.0),
             adx_filter_enabled=params.get("adx_filter_enabled", True),
+            atr_filter_enabled=params.get("atr_filter_enabled", False),
+            atr_period=params.get("atr_period", 14),
+            atr_min_points=params.get("atr_min_points", 0.0),
+            blocked_entry_hours=params.get("blocked_entry_hours"),
         )
 
         signal_count = (signal_df["signal"] != 0).sum()
@@ -222,6 +226,7 @@ def run_backtest(
 
     bt_cfg = config.get("backtest", {})
     engine = BacktestEngine(
+        initial_cash=bt_cfg.get("initial_cash", 1_000_000.0),
         commission=bt_cfg.get("commission", 22.0),
         slippage=bt_cfg.get("slippage", 1.0),
         size=bt_cfg.get("size", 1),

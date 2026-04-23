@@ -1,0 +1,11 @@
+symbol=TMF
+contract=TMFR1
+raw_rows=476751
+ltf_rows=31918
+htf_rows=8399
+ltf_start=2024-07-29 09:00:00
+ltf_end=2026-04-23 23:45:00
+htf_start=2024-07-29 09:00:00
+htf_end=2026-04-24 00:00:00
+ltf_cache=E:\python\trading-bot\data\TMF_15min.parquet
+htf_cache=E:\python\trading-bot\data\TMF_60min.parquet
