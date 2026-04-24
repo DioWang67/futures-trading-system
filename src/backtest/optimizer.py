@@ -74,6 +74,23 @@ class StrategyOptimizer:
         self.fixed_params = dict(opt_cfg.get("fixed_params", {}))
         enabled_params = opt_cfg.get("enabled_params")
         self.enabled_params = set(enabled_params) if enabled_params else None
+        overlap = set(self.fixed_params).intersection(self.enabled_params or set())
+        if overlap:
+            overlap_keys = ", ".join(sorted(overlap))
+            raise ValueError(
+                "fixed_params 與 enabled_params 不可重複鍵: "
+                f"{overlap_keys}"
+            )
+
+        self.score_weights = {
+            "win_rate": opt_cfg.get("score_weights", {}).get("win_rate", 100.0),
+            "profit_factor": opt_cfg.get("score_weights", {}).get("profit_factor", 20.0),
+            "sharpe": opt_cfg.get("score_weights", {}).get("sharpe", 30.0),
+            "max_drawdown": opt_cfg.get("score_weights", {}).get("max_drawdown", 200.0),
+            "avg_rr": opt_cfg.get("score_weights", {}).get("avg_rr", 20.0),
+            "trades": opt_cfg.get("score_weights", {}).get("trades", 0.5),
+        }
+        self.profit_factor_cap = opt_cfg.get("profit_factor_cap", 5.0)
 
         self.best_result: Optional[BacktestResult] = None
         self.best_params: Optional[dict] = None
@@ -93,6 +110,8 @@ class StrategyOptimizer:
         params.update(self.fixed_params)
 
         for name in PARAM_SPECS:
+            if name in self.fixed_params:
+                continue
             if self.enabled_params is None or name in self.enabled_params:
                 params[name] = self._suggest_param(trial, name)
 
@@ -112,14 +131,15 @@ class StrategyOptimizer:
             return -100.0
 
         # Composite score: 各指標與門檻的差距加權總和
+        pf_for_score = min(result.profit_factor, self.profit_factor_cap)
         score = 0.0
-        score += (result.win_rate - self.min_win_rate) * 100
-        score += (result.profit_factor - self.min_profit_factor) * 20
-        score += (result.sharpe_ratio - self.min_sharpe) * 30
-        score += (self.max_mdd - result.max_drawdown) * 200
-        score += (result.avg_rr - self.min_rr) * 20
+        score += (result.win_rate - self.min_win_rate) * self.score_weights["win_rate"]
+        score += (pf_for_score - self.min_profit_factor) * self.score_weights["profit_factor"]
+        score += (result.sharpe_ratio - self.min_sharpe) * self.score_weights["sharpe"]
+        score += (self.max_mdd - result.max_drawdown) * self.score_weights["max_drawdown"]
+        score += (result.avg_rr - self.min_rr) * self.score_weights["avg_rr"]
         # 交易數量獎勵：鼓勵更多交易以提高統計有效性
-        score += min(result.total_trades, 100) * 0.5
+        score += min(result.total_trades, 100) * self.score_weights["trades"]
 
         # 檢查是否達標
         if result.meets_custom_threshold(
@@ -172,7 +192,10 @@ class StrategyOptimizer:
         # 沒達標，回傳最佳嘗試的參數
         if study.best_trial is not None:
             logger.warning("未達標，回傳最佳嘗試參數")
-            return study.best_trial.params
+            merged_params = dict(self.base_strategy_params)
+            merged_params.update(self.fixed_params)
+            merged_params.update(study.best_trial.params)
+            return merged_params
 
         return None
 

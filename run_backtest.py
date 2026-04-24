@@ -101,7 +101,7 @@ def main():
     if not args.no_mc and not args.optimize_only and not args.wf_only:
         if result and result.trade_log:
             trade_pnls = [t.get("pnl", 0.0) for t in result.trade_log]
-            initial_capital = config.get("strategy", {}).get("initial_capital", 1_000_000)
+            initial_capital = config.get("backtest", {}).get("initial_cash", 1_000_000)
             n_sims = args.mc_sims
 
             logger.info(f"\n===== Monte Carlo 模擬 ({n_sims:,} runs × 3 methods) =====")

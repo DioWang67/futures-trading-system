@@ -19,6 +19,13 @@ def sample_htf():
 
 
 class TestBacktestResult:
+    def test_meets_threshold_boundary_is_inclusive(self):
+        r = BacktestResult(
+            win_rate=0.55, profit_factor=1.5, sharpe_ratio=1.2,
+            max_drawdown=0.15, avg_rr=1.5,
+        )
+        assert r.meets_threshold
+
     def test_meets_threshold_all_pass(self):
         r = BacktestResult(
             total_trades=50, winning_trades=30, losing_trades=20,
