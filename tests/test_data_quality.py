@@ -48,6 +48,23 @@ class TestDataQuality:
         issues = check_data_quality(df, freq="15min", max_gap_bars=3)
         assert any("gap" in i.lower() for i in issues)
 
+    def test_weekend_gap_not_reported(self):
+        dates = pd.to_datetime([
+            "2024-01-05 13:45",  # Friday
+            "2024-01-08 08:45",  # Monday
+            "2024-01-08 09:00",
+        ])
+        df = pd.DataFrame({
+            "datetime": dates,
+            "open": [100, 101, 102],
+            "high": [101, 102, 103],
+            "low": [99, 100, 101],
+            "close": [100, 101, 102],
+            "volume": [100, 100, 100],
+        })
+        issues = check_data_quality(df, freq="15min", max_gap_bars=3)
+        assert not any("gap detected" in i.lower() for i in issues)
+
     def test_zero_volume_warning(self):
         dates = pd.date_range("2024-01-02 09:00", periods=20, freq="15min")
         df = pd.DataFrame({

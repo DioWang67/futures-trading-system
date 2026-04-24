@@ -48,3 +48,16 @@ def test_precompute_signals_blocked_hours_can_block_all_entries():
     )
 
     assert int((result["signal"] != 0).sum()) == 0
+
+
+def test_precompute_signals_non_datetime_index_does_not_crash():
+    ltf = generate_sample_data(n_bars=120, freq="15T", seed=7).drop(columns=["datetime"])
+    htf = generate_sample_data(n_bars=30, freq="60T", seed=7)
+
+    result = precompute_signals(
+        ltf,
+        htf,
+        blocked_entry_hours=list(range(24)),
+    )
+
+    assert "signal" in result.columns

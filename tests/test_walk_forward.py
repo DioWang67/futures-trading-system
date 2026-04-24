@@ -50,6 +50,14 @@ class TestWalkForwardValidator:
         # lookback=120 => min_test_bars=120, so both segments should be skipped.
         assert len(splits) == 0
 
+    def test_split_respects_atr_period_lookback(self, sample_data, config):
+        cfg = dict(config)
+        cfg["strategy"] = {"swing_lookback": 5, "adx_period": 14, "ob_max_age": 20, "atr_period": 120}
+        cfg["walk_forward"] = {"n_splits": 2, "train_ratio": 0.7}
+        validator = WalkForwardValidator(sample_data, config=cfg)
+        splits = validator._split_data(sample_data)
+        assert len(splits) == 0
+
     def test_pass_rate(self):
         result = WalkForwardResult()
         assert result.pass_rate == 0.0

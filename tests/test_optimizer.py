@@ -98,3 +98,38 @@ class TestStrategyOptimizer:
         assert captured["params"]["swing_lookback"] == 10
         assert captured["params"]["blocked_entry_hours"] == [0, 1, 10]
         assert captured["params"]["atr_min_points"] == 15.0
+
+    def test_init_raises_when_fixed_and_enabled_overlap(self, sample_data):
+        config = {
+            "optimization": {
+                "enabled_params": ["rr_ratio", "sl_buffer"],
+                "fixed_params": {"rr_ratio": 1.5},
+            },
+        }
+        with pytest.raises(ValueError, match="fixed_params 與 enabled_params 不可重複鍵"):
+            StrategyOptimizer(ltf_data=sample_data, config=config)
+
+    def test_optimize_fallback_merges_base_and_fixed_params(self, sample_data, monkeypatch):
+        config = {
+            "strategy": {"blocked_entry_hours": [1, 2, 3], "atr_min_points": 10.0},
+            "optimization": {"n_trials": 1, "timeout": 1, "fixed_params": {"atr_min_points": 25.0}},
+        }
+        opt = StrategyOptimizer(ltf_data=sample_data, config=config)
+
+        class DummyBestTrial:
+            params = {"rr_ratio": 2.0}
+
+        class DummyStudy:
+            best_trial = DummyBestTrial()
+
+            def optimize(self, *_args, **_kwargs):
+                return None
+
+        monkeypatch.setattr(optuna, "create_study", lambda **_kwargs: DummyStudy())
+        monkeypatch.setattr(opt, "_objective", lambda _trial: -1.0)
+
+        params = opt.optimize()
+        assert params is not None
+        assert params["rr_ratio"] == 2.0
+        assert params["blocked_entry_hours"] == [1, 2, 3]
+        assert params["atr_min_points"] == 25.0

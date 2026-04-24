@@ -321,7 +321,7 @@ async def route_order(
                     broker_name, opposite_side, open_side,
                 )
                 close_result, _ = await _submit_tracked(
-                    submit_side, current.quantity,
+                    submit_side, current.quantity, idempotency_key,
                 )
                 results.append(close_result)
                 if not _submit_ok(close_result):
