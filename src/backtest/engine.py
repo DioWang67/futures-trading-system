@@ -41,11 +41,11 @@ class BacktestResult:
     def meets_threshold(self) -> bool:
         """是否達到所有績效門檻。"""
         return (
-            self.win_rate > 0.55
-            and self.profit_factor > 1.5
-            and self.sharpe_ratio > 1.2
-            and self.max_drawdown < 0.15
-            and self.avg_rr > 1.5
+            self.win_rate >= 0.55
+            and self.profit_factor >= 1.5
+            and self.sharpe_ratio >= 1.2
+            and self.max_drawdown <= 0.15
+            and self.avg_rr >= 1.5
         )
 
     def meets_custom_threshold(
