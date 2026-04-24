@@ -10,7 +10,6 @@ Security:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -243,11 +242,15 @@ async def handle_webhook(
     notifier = getattr(request.app.state, "notifier", None)
     for result, name in [(shioaji_result, "shioaji"), (rithmic_result, "rithmic")]:
         if result.get("status") == "risk_rejected" and notifier:
-            asyncio.create_task(
-                notifier.send_risk_alert(
-                    f"[{name}] Order rejected: {result.get('reason', 'unknown')}"
-                )
+            sent = await notifier.send_risk_alert(
+                f"[{name}] Order rejected: {result.get('reason', 'unknown')}"
             )
+            if not sent:
+                logger.error(
+                    "Risk rejection alert delivery failed for {}: {}",
+                    name,
+                    result.get("reason", "unknown"),
+                )
 
     return {
         "received_at": received_at,

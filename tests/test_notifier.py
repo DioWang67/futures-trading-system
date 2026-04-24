@@ -10,8 +10,9 @@ class _CaptureNotifier(Notifier):
         super().__init__(telegram_token="token", telegram_chat_id="chat")
         self.messages: list[str] = []
 
-    async def _send(self, text: str) -> None:
+    async def _send(self, text: str, retries: int = 1, base_delay_seconds: float = 1.0) -> bool:
         self.messages.append(text)
+        return True
 
 
 @pytest.mark.asyncio
@@ -38,3 +39,23 @@ async def test_send_protective_event_formats_slippage():
     assert "TMF long x1" in message
     assert "Status: filled" in message
     assert "Slippage: -4.0 pts" in message
+
+
+@pytest.mark.asyncio
+async def test_send_risk_alert_retries_until_success(monkeypatch):
+    notifier = Notifier(telegram_token="token", telegram_chat_id="chat")
+    attempts = {"count": 0}
+
+    async def fake_send_telegram(_text: str) -> bool:
+        attempts["count"] += 1
+        return attempts["count"] >= 3
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(notifier, "_send_telegram", fake_send_telegram)
+    monkeypatch.setattr("notifier.asyncio.sleep", fake_sleep)
+
+    ok = await notifier.send_risk_alert("risk")
+    assert ok is True
+    assert attempts["count"] == 3

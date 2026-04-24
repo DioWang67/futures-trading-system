@@ -108,6 +108,36 @@ class TestOrders:
         assert any(o["id"] == first for o in pending)
         assert all(o["id"] != second for o in pending)
 
+    def test_claim_pending_order_broker_order_id_uses_oldest_row(self, store):
+        first = store.record_order("shioaji", "Buy", 1, broker_order_id="dup-id")
+        second = store.record_order("shioaji", "Buy", 1, broker_order_id="dup-id")
+
+        matched = store.claim_pending_order(
+            "shioaji", "Buy", fill_qty=1, broker_order_id="dup-id"
+        )
+
+        assert matched == first
+        pending = store.get_pending_orders("shioaji")
+        assert any(o["id"] == second for o in pending)
+
+    def test_claim_pending_order_overfill_records_risk_event(self, store):
+        order_id = store.record_order("shioaji", "Buy", 2)
+        matched = store.claim_pending_order("shioaji", "Buy", fill_qty=5)
+        assert matched == order_id
+
+        with store._cursor() as cur:
+            cur.execute(
+                """SELECT event_type, broker, details
+                   FROM risk_events
+                   WHERE event_type = 'over_fill_clamp'
+                   ORDER BY id DESC LIMIT 1"""
+            )
+            row = cur.fetchone()
+
+        assert row is not None
+        assert row["broker"] == "shioaji"
+        assert "incoming_fill=5" in row["details"]
+
     def test_claim_pending_order_no_match(self, store):
         # Different broker / action should not be claimed.
         store.record_order("shioaji", "Buy", 1)

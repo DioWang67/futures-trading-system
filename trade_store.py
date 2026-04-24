@@ -390,7 +390,7 @@ class TradeStore:
                        WHERE broker = ? AND action = ?
                          AND broker_order_id = ?
                          AND status IN ('submitted', 'partially_filled', 'pending')
-                       ORDER BY id DESC LIMIT 1""",
+                       ORDER BY id ASC LIMIT 1""",
                     (broker, action, broker_order_id),
                 )
                 row = cur.fetchone()
@@ -432,7 +432,25 @@ class TradeStore:
             order_id = row["id"]
             order_qty = int(row["quantity"])
             prior_filled = int(row["filled_qty"] or 0)
-            new_filled = min(order_qty, prior_filled + max(0, int(fill_qty)))
+            incoming_fill = max(0, int(fill_qty))
+            projected_filled = prior_filled + incoming_fill
+            if projected_filled > order_qty:
+                details = (
+                    f"order_id={order_id} broker={broker} action={action} "
+                    f"qty={order_qty} prior_filled={prior_filled} "
+                    f"incoming_fill={incoming_fill}"
+                )
+                logger.warning(
+                    "[TradeStore] Over-fill clamped: {}",
+                    details,
+                )
+                cur.execute(
+                    """INSERT INTO risk_events
+                       (event_type, broker, details, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    ("over_fill_clamp", broker, details, now),
+                )
+            new_filled = min(order_qty, projected_filled)
             new_status = "filled" if new_filled >= order_qty else "partially_filled"
             cur.execute(
                 """UPDATE orders
