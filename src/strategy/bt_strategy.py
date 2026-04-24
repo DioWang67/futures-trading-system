@@ -169,8 +169,19 @@ def precompute_signals(
     lows = ltf["low"].values.astype(float)
     closes = ltf["close"].values.astype(float)
     n = len(ltf)
-    ltf_dts = pd.to_datetime(ltf["datetime"]) if "datetime" in ltf.columns else pd.Series(ltf.index)
-    entry_hours = ltf_dts.dt.hour.to_numpy(dtype=int)
+    if "datetime" in ltf.columns:
+        ltf_dt_values = pd.to_datetime(ltf["datetime"]).to_numpy()
+        ltf_hour_series = pd.to_datetime(ltf["datetime"])
+    elif isinstance(ltf.index, pd.DatetimeIndex):
+        ltf_dt_values = ltf.index.to_numpy()
+        ltf_hour_series = pd.Series(ltf.index, index=ltf.index)
+    else:
+        ltf_dt_values = ltf.index.to_numpy()
+        ltf_hour_series = None
+
+    entry_hours: Optional[np.ndarray] = None
+    if blocked_entry_hours is not None and ltf_hour_series is not None:
+        entry_hours = ltf_hour_series.dt.hour.to_numpy(dtype=int)
 
     # ---- ADX 趨勢強度過濾 ----
     adx_arr, plus_di_arr, minus_di_arr = _compute_adx(highs, lows, closes, adx_period)
@@ -189,7 +200,6 @@ def precompute_signals(
         htf_breaks = detect_structure_breaks(htf_swings, h_highs, h_lows, h_closes, bos_min_move)
 
         # 將 HTF 趨勢映射到 LTF 時間軸
-        ltf_dt_values = ltf_dts.values
         current_trend = 0
         htf_break_idx = 0
 
@@ -307,7 +317,11 @@ def precompute_signals(
             continue
         if atr_filter_enabled and (np.isnan(atr_arr[i]) or atr_arr[i] < atr_min_points):
             continue
-        if not _is_entry_hour_allowed(int(entry_hours[i]), blocked_entry_hours):
+        if (
+            blocked_entry_hours is not None
+            and entry_hours is not None
+            and not _is_entry_hour_allowed(int(entry_hours[i]), blocked_entry_hours)
+        ):
             continue
 
         trend = Trend.BULLISH if htf_trend_arr[i] == 1 else Trend.BEARISH
@@ -424,7 +438,8 @@ class SMCPAStrategy(bt.Strategy):
     """
 
     params = dict(
-        # 這些參數用於 precompute_signals，這裡僅作紀錄
+        # metadata-only：實際策略邏輯由 precompute_signals() 先行計算，
+        # Backtrader next() 不會直接讀取這些參數。
         swing_lookback=5,
         bos_min_move=15.0,
         ob_max_age=20,

@@ -20,6 +20,20 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _is_weekend_session_gap(prev_ts: pd.Timestamp, cur_ts: pd.Timestamp) -> bool:
+    """Return True when the gap is likely an expected weekend market break.
+
+    We intentionally keep this conservative and only skip long
+    Friday→Monday style gaps.
+    """
+    if pd.isna(prev_ts) or pd.isna(cur_ts):
+        return False
+    if cur_ts <= prev_ts:
+        return False
+    gap = cur_ts - prev_ts
+    return prev_ts.weekday() >= 4 and cur_ts.weekday() == 0 and gap >= pd.Timedelta(hours=24)
+
+
 def check_data_quality(
     df: pd.DataFrame,
     freq: str = "15min",
@@ -60,6 +74,10 @@ def check_data_quality(
         large_gaps = diffs[diffs > expected_delta * max_gap_bars]
         if len(large_gaps) > 0:
             for idx, gap in large_gaps.items():
+                prev_ts = dt_series.shift(1).loc[idx]
+                cur_ts = dt_series.loc[idx]
+                if _is_weekend_session_gap(pd.Timestamp(prev_ts), pd.Timestamp(cur_ts)):
+                    continue
                 gap_bars = gap / expected_delta
                 issues.append(
                     f"Gap detected: {gap_bars:.0f} bars at {idx} "

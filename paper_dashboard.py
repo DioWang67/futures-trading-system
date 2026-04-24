@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config import settings
@@ -246,32 +246,73 @@ async def api_analytics_signals(
     }
 
 
+def _is_dashboard_cookie_authenticated(request: Request) -> bool:
+    expected = settings.admin.secret.get_secret_value()
+    cookie_secret = request.cookies.get("paper_dashboard_admin_secret") or ""
+    return bool(expected and cookie_secret and hmac.compare_digest(cookie_secret, expected))
+
+
+def _build_login_page() -> str:
+    return """<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TMF Dashboard Login</title>
+  <style>
+    body { font-family: "Segoe UI", "PingFang TC", sans-serif; margin: 0; background: #f4efe5; color: #183126; }
+    .wrap { max-width: 420px; margin: 10vh auto; background: rgba(255,255,255,0.92); border: 1px solid rgba(24,49,38,0.12); border-radius: 18px; padding: 24px; }
+    h1 { margin-top: 0; font-size: 24px; }
+    label { display:block; margin-bottom: 8px; color: #68766f; font-size: 14px; }
+    input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid rgba(24,49,38,0.2); margin-bottom: 12px; }
+    button { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: #146d4a; color: #fff; font-weight: 700; cursor: pointer; }
+    p { color: #68766f; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>TMF Dashboard</h1>
+    <p>請輸入管理密鑰登入（不使用 URL query 參數）。</p>
+    <form method="post" action="/login">
+      <label for="admin_secret">Admin Secret</label>
+      <input id="admin_secret" name="admin_secret" type="password" autocomplete="current-password" required>
+      <button type="submit">登入</button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+
+@app.post("/login")
+async def dashboard_login(admin_secret: str = Form(default="")) -> RedirectResponse:
+    expected = settings.admin.secret.get_secret_value()
+    submitted_secret = (admin_secret or "").strip()
+    if not expected or not submitted_secret or not hmac.compare_digest(submitted_secret, expected):
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
+
+    csrf_token = secrets.token_urlsafe(24)
+    redirect = RedirectResponse(url="/", status_code=303)
+    redirect.set_cookie(
+        "paper_dashboard_admin_secret",
+        submitted_secret,
+        httponly=True,
+        samesite="strict",
+        max_age=8 * 60 * 60,
+    )
+    redirect.set_cookie(
+        "paper_dashboard_csrf",
+        csrf_token,
+        httponly=False,
+        samesite="strict",
+        max_age=8 * 60 * 60,
+    )
+    return redirect
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
-    admin_secret = (request.query_params.get("admin_secret") or "").strip()
-    expected = settings.admin.secret.get_secret_value()
-
-    if admin_secret:
-        if not expected or not hmac.compare_digest(admin_secret, expected):
-            raise HTTPException(status_code=403, detail="Invalid admin secret")
-
-        csrf_token = secrets.token_urlsafe(24)
-        redirect = RedirectResponse(url=request.url.path, status_code=303)
-        redirect.set_cookie(
-            "paper_dashboard_admin_secret",
-            admin_secret,
-            httponly=True,
-            samesite="strict",
-            max_age=8 * 60 * 60,
-        )
-        redirect.set_cookie(
-            "paper_dashboard_csrf",
-            csrf_token,
-            httponly=False,
-            samesite="strict",
-            max_age=8 * 60 * 60,
-        )
-        return redirect
+    if not _is_dashboard_cookie_authenticated(request):
+        return HTMLResponse(content=_build_login_page(), status_code=200)
 
     csrf_token = request.cookies.get("paper_dashboard_csrf") or ""
     if (request.cookies.get("paper_dashboard_admin_secret") or "") and not csrf_token:

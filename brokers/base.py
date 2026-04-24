@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import threading
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Optional, Protocol, runtime_checkable
 
 from loguru import logger
 
@@ -128,6 +128,7 @@ async def route_order(
     idempotency_key: str = "",
     reversal_fill_timeout: float = REVERSAL_FILL_TIMEOUT_SECONDS,
     rate_limiter: Optional[RateLimiter] = None,
+    cancel_fn: Optional[Callable[[str], Awaitable[bool]]] = None,
 ) -> dict:
     """Position-aware order routing shared by all brokers.
 
@@ -321,7 +322,7 @@ async def route_order(
                     broker_name, opposite_side, open_side,
                 )
                 close_result, _ = await _submit_tracked(
-                    submit_side, current.quantity,
+                    submit_side, current.quantity, idempotency_key,
                 )
                 results.append(close_result)
                 if not _submit_ok(close_result):
@@ -347,6 +348,27 @@ async def route_order(
                 flat = await position.wait_for_flat(reversal_fill_timeout)
                 if not flat:
                     pos_now = position.get_position()
+                    close_broker_order_id = str(
+                        close_result.get("broker_order_id") or ""
+                    ).strip()
+                    cancel_attempted = False
+                    cancel_ok = False
+                    if close_broker_order_id and cancel_fn is not None:
+                        cancel_attempted = True
+                        try:
+                            cancel_ok = await cancel_fn(close_broker_order_id)
+                        except Exception as cancel_exc:
+                            logger.error(
+                                "[{}] close-leg cancel failed for order {}: {}",
+                                broker_name, close_broker_order_id, cancel_exc,
+                            )
+                            cancel_ok = False
+
+                    close_only_reason = (
+                        "reversal close leg timeout; manual position verification required"
+                    )
+                    if risk_manager:
+                        risk_manager.set_close_only(True, close_only_reason)
                     logger.error(
                         "[{}] Close leg not filled within {}s "
                         "(position still {}x{}), aborting open",
@@ -357,13 +379,17 @@ async def route_order(
                         trade_store.record_risk_event(
                             "reverse_close_timeout", broker_name,
                             f"still {pos_now.side}x{pos_now.quantity} "
-                            f"after {reversal_fill_timeout}s",
+                            f"after {reversal_fill_timeout}s; "
+                            f"cancel_attempted={cancel_attempted}; "
+                            f"cancel_ok={cancel_ok}; "
+                            f"close_order_id={close_broker_order_id or 'N/A'}",
                         )
                     return {
                         "status": "error", "broker": broker_name,
                         "reason": (
                             f"close leg did not fill within "
-                            f"{reversal_fill_timeout}s"
+                            f"{reversal_fill_timeout}s; "
+                            f"system switched to close-only mode"
                         ),
                         "orders": results,
                     }
@@ -397,4 +423,4 @@ async def route_order(
         logger.error("[{}] place_order error: {}", broker_name, e)
         if trade_store:
             trade_store.record_risk_event("order_error", broker_name, str(e))
-        return {"status": "error", "broker": broker_name, "reason": str(e)}
+        return {"status": "error", "broker": broker_name, "reason": "broker_error"}

@@ -169,8 +169,8 @@ async def lifespan(app: FastAPI):
         cooldown_seconds=settings.risk.cooldown_seconds,
         initial_capital=settings.risk.initial_capital,
     )
-    risk_manager = RiskManager(risk_cfg)
     trade_store = TradeStore()
+    risk_manager = RiskManager(risk_cfg, trade_store=trade_store)
     notifier = Notifier(
         telegram_token=settings.notification.telegram_bot_token.get_secret_value(),
         telegram_chat_id=settings.notification.telegram_chat_id,

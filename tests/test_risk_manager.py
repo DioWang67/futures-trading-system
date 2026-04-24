@@ -7,6 +7,24 @@ import pytest
 from risk_manager import RiskConfig, RiskManager
 
 
+class _MemoryRiskStore:
+    def __init__(self, events=None):
+        self.events = list(events or [])
+
+    def record_risk_event(self, event_type: str, broker: str = "", details: str = "") -> None:
+        from datetime import datetime, timezone
+
+        self.events.insert(0, {
+            "event_type": event_type,
+            "broker": broker,
+            "details": details,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def get_recent_risk_events(self, limit: int = 20):
+        return self.events[:limit]
+
+
 @pytest.fixture
 def config():
     return RiskConfig(
@@ -195,6 +213,30 @@ class TestHaltAndResume:
         rm.reset_daily()
         status = rm.get_status()
         assert status["daily_pnl"] == 0.0
+
+    def test_halt_is_restored_from_trade_store(self, config):
+        from datetime import datetime, timezone
+
+        store = _MemoryRiskStore(events=[{
+            "event_type": "halt",
+            "broker": "",
+            "details": "daily loss limit reached",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }])
+        rm2 = RiskManager(config, trade_store=store)
+        assert rm2.is_halted is True
+        assert "daily loss limit" in rm2.halt_reason
+
+    def test_resume_event_clears_restored_halt(self, config):
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        store = _MemoryRiskStore(events=[
+            {"event_type": "resume_trading", "broker": "", "details": "", "created_at": now},
+            {"event_type": "halt", "broker": "", "details": "x", "created_at": now},
+        ])
+        rm2 = RiskManager(config, trade_store=store)
+        assert rm2.is_halted is False
 
 
 class TestEquityTracking:

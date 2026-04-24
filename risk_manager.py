@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -54,7 +54,7 @@ class RiskManager:
             # reject the order
     """
 
-    def __init__(self, config: Optional[RiskConfig] = None) -> None:
+    def __init__(self, config: Optional[RiskConfig] = None, trade_store: Any = None) -> None:
         self._config = config or RiskConfig()
         if self._config.initial_capital <= 0:
             # Drawdown % and PnL-pct limits both scale off this; a zero
@@ -74,6 +74,8 @@ class RiskManager:
         self._close_only = False
         self._close_only_reason = ""
         self._cooldown_until: dict[str, float] = {}  # broker -> unix timestamp
+        self._trade_store = trade_store
+        self._restore_halt_state()
 
     @property
     def config(self) -> RiskConfig:
@@ -104,7 +106,50 @@ class RiskManager:
         self._halt_reason = reason
         if not self._halted_at:
             self._halted_at = datetime.now(timezone.utc).isoformat()
+        if self._trade_store:
+            try:
+                self._trade_store.record_risk_event(
+                    "halt",
+                    details=reason,
+                )
+            except Exception as exc:
+                logger.warning("[RiskManager] failed to persist halt event: {}", exc)
         logger.critical("[RiskManager] TRADING HALTED: {}", reason)
+
+    def _restore_halt_state(self) -> None:
+        """Restore same-day halt state from persistent risk events."""
+        if self._trade_store is None:
+            return
+        try:
+            events = self._trade_store.get_recent_risk_events(limit=200)
+        except Exception as exc:
+            logger.warning("[RiskManager] failed to read risk events: {}", exc)
+            return
+
+        today_utc = datetime.now(timezone.utc).date()
+        for event in events:
+            event_type = str(event.get("event_type") or "")
+            created_at = str(event.get("created_at") or "")
+            if event_type in {"resume_trading", "daily_reset"}:
+                return
+            if event_type != "halt":
+                continue
+            try:
+                created_dt = datetime.fromisoformat(created_at)
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if created_dt.date() != today_utc:
+                continue
+            self._halted = True
+            self._halt_reason = str(event.get("details") or "restored halt")
+            self._halted_at = created_dt.isoformat()
+            logger.warning(
+                "[RiskManager] Restored halted state from risk_events (at={})",
+                self._halted_at,
+            )
+            return
 
     def set_close_only(self, enabled: bool, reason: str = "") -> None:
         with self._lock:
@@ -309,6 +354,14 @@ class RiskManager:
             self._portfolio_daily = DailyPnL()
             # Start a fresh daily drawdown baseline from current equity.
             self._peak_equity = self._current_equity
+            if self._trade_store:
+                try:
+                    self._trade_store.record_risk_event(
+                        "daily_reset",
+                        details="daily counters reset",
+                    )
+                except Exception as exc:
+                    logger.warning("[RiskManager] failed to persist daily_reset event: {}", exc)
             logger.info("[RiskManager] Daily counters reset")
 
     def resume_trading(self) -> None:
@@ -320,6 +373,14 @@ class RiskManager:
             self._close_only = False
             self._close_only_reason = ""
             self._cooldown_until.clear()
+            if self._trade_store:
+                try:
+                    self._trade_store.record_risk_event(
+                        "resume_trading",
+                        details="trading resumed by operator",
+                    )
+                except Exception as exc:
+                    logger.warning("[RiskManager] failed to persist resume_trading event: {}", exc)
             logger.info("[RiskManager] Trading resumed by operator")
 
     def get_status(self) -> dict:

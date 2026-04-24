@@ -76,13 +76,17 @@ class WalkForwardValidator:
         segment_size = n // self.n_splits
         splits = []
         strategy_cfg = self.config.get("strategy", {})
+        opt_cfg = self.config.get("optimization", {})
+        fixed_params = opt_cfg.get("fixed_params", {})
         wf_cfg = self.config.get("walk_forward", {})
+        atr_period_cfg = fixed_params.get("atr_period", strategy_cfg.get("atr_period", 0))
         lookback = int(wf_cfg.get("lookback_period", 0) or 0)
         lookback = max(
             lookback,
             int(strategy_cfg.get("swing_lookback", 0) or 0),
             int(strategy_cfg.get("adx_period", 0) or 0),
             int(strategy_cfg.get("ob_max_age", 0) or 0),
+            int(atr_period_cfg or 0),
         )
         min_train_bars = int(wf_cfg.get("min_train_bars", max(50, lookback * 2)))
         min_test_bars = int(wf_cfg.get("min_test_bars", max(20, lookback)))

@@ -183,3 +183,39 @@ def test_dashboard_api_accepts_admin_secret(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["runner"]["status"] == "ok"
+
+
+def test_dashboard_login_via_post_sets_auth_cookie(monkeypatch):
+    monkeypatch.setattr(
+        paper_dashboard.settings.admin,
+        "secret",
+        SecretStr("dashboard-secret-1234"),
+    )
+    client = TestClient(paper_dashboard.app)
+
+    login = client.post(
+        "/login",
+        data={"admin_secret": "dashboard-secret-1234"},
+        follow_redirects=False,
+    )
+
+    assert login.status_code == 303
+    assert "paper_dashboard_admin_secret" in login.headers.get("set-cookie", "")
+
+    home = client.get("/")
+    assert home.status_code == 200
+    assert "TMF Trading Monitor" in home.text
+
+
+def test_dashboard_query_param_secret_no_longer_logs_in(monkeypatch):
+    monkeypatch.setattr(
+        paper_dashboard.settings.admin,
+        "secret",
+        SecretStr("dashboard-secret-1234"),
+    )
+    client = TestClient(paper_dashboard.app)
+
+    response = client.get("/?admin_secret=dashboard-secret-1234")
+
+    assert response.status_code == 200
+    assert "method=\"post\" action=\"/login\"" in response.text

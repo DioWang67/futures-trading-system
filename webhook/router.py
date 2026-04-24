@@ -10,7 +10,7 @@ Security:
 
 from __future__ import annotations
 
-import asyncio
+import hmac
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -118,7 +118,7 @@ async def _verify_request(
 
     # Fallback is disabled by default because it cannot bind timestamp+body.
     if settings.webhook.allow_legacy_secret_header and x_webhook_secret:
-        if x_webhook_secret != secret:
+        if not hmac.compare_digest(x_webhook_secret, secret):
             logger.warning("Webhook rejected: invalid secret")
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
         return
@@ -243,11 +243,15 @@ async def handle_webhook(
     notifier = getattr(request.app.state, "notifier", None)
     for result, name in [(shioaji_result, "shioaji"), (rithmic_result, "rithmic")]:
         if result.get("status") == "risk_rejected" and notifier:
-            asyncio.create_task(
-                notifier.send_risk_alert(
-                    f"[{name}] Order rejected: {result.get('reason', 'unknown')}"
-                )
+            sent = await notifier.send_risk_alert(
+                f"[{name}] Order rejected: {result.get('reason', 'unknown')}"
             )
+            if not sent:
+                logger.error(
+                    "Risk rejection alert delivery failed for {}: {}",
+                    name,
+                    result.get("reason", "unknown"),
+                )
 
     return {
         "received_at": received_at,
@@ -291,4 +295,4 @@ async def _safe_execute(
         # Deliberately no retry here: re-submitting place_order without the
         # idempotency key can duplicate a live order. Surface the error.
         logger.error("[{}] Unhandled error in place_order: {}", broker_name, e)
-        return {"status": "error", "broker": broker_name, "reason": str(e)}
+        return {"status": "error", "broker": broker_name, "reason": "broker_error"}

@@ -123,7 +123,50 @@ class TestRouteOrder:
 
         result = await route_order("test", position, "buy", 1, failing_submit, True)
         assert result["status"] == "error"
-        assert "broker offline" in result["reason"]
+        assert result["reason"] == "broker_error"
+
+    @pytest.mark.asyncio
+    async def test_reversal_close_leg_records_idempotency_key(self, position):
+        position.update_position("short", 2)
+        recorded_keys: list[str] = []
+
+        async def submit_fn(action: str, quantity: int) -> dict:
+            position.apply_fill(action, quantity, fill_price=100.0)
+            return {"status": "submitted", "action": action, "quantity": quantity}
+
+        class DummyStore:
+            def check_idempotency(self, _key: str):
+                return None
+
+            def reserve_idempotency(self, _key: str, _broker: str) -> bool:
+                return True
+
+            def record_order(self, _broker: str, _action: str, _qty: int, idempotency_key: str = "", broker_order_id: str = "") -> int:
+                recorded_keys.append(idempotency_key)
+                return len(recorded_keys)
+
+            def update_order_status(self, *_args, **_kwargs):
+                return None
+
+            def set_broker_order_id(self, *_args, **_kwargs):
+                return None
+
+            def save_position_snapshot(self, *_args, **_kwargs):
+                return None
+
+        result = await route_order(
+            "test",
+            position,
+            "buy",
+            1,
+            submit_fn,
+            True,
+            trade_store=DummyStore(),
+            idempotency_key="flip-K1",
+        )
+
+        assert result["status"] == "ok"
+        assert recorded_keys == ["flip-K1", "flip-K1"]
 
 
 class TestRateLimiter:
